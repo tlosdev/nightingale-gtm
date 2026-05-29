@@ -276,6 +276,26 @@ Manual-trigger runs skip the push notification.
 
 ---
 
+## Step 11 — Hand off to buying-group-finder-academic
+
+After the terminal summary (Step 9) and push notification (Step 10) have both run, invoke the `buying-group-finder-academic` agent via the `Agent` tool. Pass the absolute path of the sweep file you just wrote in Step 7 as the prompt argument:
+
+```
+Agent(
+  subagent_type="buying-group-finder-academic",
+  description="Find buying group for {date} sweep",
+  prompt="find buying group from {absolute path to ~/Desktop/nightingale-signals/academic/output/academic-signals-{date}.md}"
+)
+```
+
+This hand-off runs the contact discovery follow-up automatically — copying through PIs you already named, then WebSearching the Buyer (Department Chair / Director CRU / etc.) and Tech Gatekeeper (CISO / Director IT Security / Privacy Officer) buckets, plus scraping publicly-published institutional and personal emails. The buying-group agent has its own state and 30-day re-query gate; it will skip institutions whose contacts were found recently.
+
+**Do NOT block your own terminal summary or push notification on the buying-group agent's completion.** Print Step 9 first, fire Step 10 if applicable, then invoke Step 11. If the buying-group agent fails, the sweep file is already written and the failure is contained.
+
+**To skip the chain** (e.g., a user only wants the qualified-list, not contact discovery), delete this Step 11 block from this file. The signal-watcher will continue to run normally without it.
+
+---
+
 ## Hard rules
 
 1. **Portability.** Never hardcode user-specific paths. Reads are repo-relative; writes go under `~/Desktop/nightingale-signals/academic/`. Anyone who clones the Nightingale repo must be able to run this agent without edits.

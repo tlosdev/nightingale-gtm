@@ -102,50 +102,28 @@ If the bootstrap folder appears but `seen_ids` is empty, that means the sources 
 
 ---
 
-## Register the weekly schedule (one-time setup)
+## Optional — register the weekly cron
 
-Both agents are designed to run weekly on Monday at 7:00 AM **local time**. Registration is per-machine — the repo carries the install scripts, not the schedule itself, because OS schedulers are per-user state.
+Both agents are designed to run weekly on Monday at 7am US Eastern. Registration is per-user (your schedule lives on your machine; it is not committed to the repo).
 
-Run the appropriate installer once after cloning:
+Inside Claude Code, register the two schedules using `CronCreate`:
 
-```bash
-# Windows (from PowerShell, in the repo root):
-.\scripts\install-schedule.ps1
+- Commercial: schedule `0 7 * * 1`, timezone `America/New_York`, trigger phrase `weekly commercial sweep`
+- Academic: schedule `0 7 * * 1`, timezone `America/New_York`, trigger phrase `weekly academic sweep`
 
-# macOS or Linux (from bash/zsh, in the repo root):
-chmod +x scripts/install-schedule.sh
-./scripts/install-schedule.sh
+(The exact `CronCreate` invocation depends on your Claude Code version; ask Claude `register a weekly cron for signal-watcher-commercial on Monday 7am ET` and confirm before it fires the tool call.)
+
+To verify registration:
+
+```
+CronList
 ```
 
-The installer detects your OS and registers two scheduled tasks (Windows Task Scheduler / macOS launchd / Linux cron) that wake up every Monday at 7:00 AM local time and invoke `claude` headlessly with the appropriate trigger phrase. Verify with:
+Both schedules should appear with the correct cron expression and timezone.
 
-```bash
-# Windows:
-Get-ScheduledTask -TaskName 'Nightingale-*'
+When a scheduled run fires, the agent additionally sends a single `PushNotification` with the headline signal counts so you see the result without opening the terminal. Manual triggers (`scan commercial signals` etc.) do not send a push notification — the terminal summary is sufficient.
 
-# macOS:
-launchctl list | grep nightingale
-
-# Linux:
-crontab -l | grep nightingale-gtm
-```
-
-When a scheduled run fires, the agent sends a single `PushNotification` with the headline signal counts so you see the result without opening the terminal. Manual triggers (`scan commercial signals` etc.) do not send a push notification — the terminal summary is sufficient.
-
-To uninstall:
-
-```bash
-# Windows:
-Unregister-ScheduledTask -TaskName 'Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep' -Confirm:$false
-
-# macOS:
-launchctl unload ~/Library/LaunchAgents/com.nightingale.commercial-sweep.plist
-launchctl unload ~/Library/LaunchAgents/com.nightingale.academic-sweep.plist
-rm ~/Library/LaunchAgents/com.nightingale.{commercial,academic}-sweep.plist
-
-# Linux:
-crontab -e   # delete the two lines tagged "# nightingale-gtm"
-```
+To remove a schedule later: `CronDelete {schedule_id}`.
 
 ---
 
@@ -155,11 +133,15 @@ crontab -e   # delete the two lines tagged "# nightingale-gtm"
 |---|---|
 | Manual sweep (commercial) | `scan commercial signals` |
 | Manual sweep (academic) | `scan academic signals` |
-| Inspect dedup state | Open `~/Desktop/nightingale-signals/{commercial|academic}/state/seen-signals.json` |
-| Force a re-surface for a known company | Edit `company_tier_history.{key}.signal_types_seen` in the state JSON to remove one type; next run will re-surface when that type fires |
-| Clear all state (start over) | Delete the `seen-signals.json` file; next run re-bootstraps |
+| Manual buying-group discovery on latest sweep | `find buying group from latest commercial sweep` / `find buying group from latest academic sweep` |
+| Inspect sweep dedup state | Open `~/Desktop/nightingale-signals/{commercial|academic}/state/seen-signals.json` |
+| Inspect buying-group state | Open `~/Desktop/nightingale-signals/{commercial|academic}/buying-groups/state/found-companies.json` |
+| Force a re-surface for a known company | Edit `company_tier_history.{key}.signal_types_seen` in the sweep state JSON to remove one type; next run will re-surface when that type fires |
+| Force re-query of contacts for a known company | Delete the entry from `buying-groups/state/found-companies.json` (or set `last_found` to a date >30 days ago); next buying-group run will re-discover |
+| Clear all state (start over) | Delete the `seen-signals.json` and `found-companies.json` files; next run re-bootstraps |
 | Tighten academic title regex | Edit the buyer/CISO title lists in `01-personas/academic-persona.md` (the agent reads it every run) |
 | Disable a flaky source | Edit the agent file to comment out the source block; e.g. LinkedIn jobs WebSearch occasionally degrades |
+| Disable the buying-group auto-chain | Delete `Step 11 — Hand off to buying-group-finder-*` from the signal-watcher agent file. The sweep will still run; contact discovery just won't fire after it. |
 
 ---
 
@@ -188,13 +170,31 @@ These are explicitly deferred. Adding any of them is a follow-up project, not a 
 
 ---
 
+## Auto-chain: buying-group discovery after each sweep
+
+Every scheduled Monday sweep ends with a **Step 11 hand-off** that invokes the corresponding buying-group-finder agent on the just-written sweep file. The chain happens inside the same scheduled task — no second cron entry is needed.
+
+**What the chain does:**
+
+- `signal-watcher-commercial` writes its sweep file, prints the terminal summary, fires its push notification, then invokes `buying-group-finder-commercial` with the sweep file path. The contact discovery agent runs WebSearch-only (no Apollo) for Economic Buyer / Technical Gatekeeper / Champion candidates and writes a `buying-group-{date}.md` file to `~/Desktop/nightingale-signals/commercial/buying-groups/output/`. **No emails on the commercial side.**
+- `signal-watcher-academic` does the same with `buying-group-finder-academic`. PIs already named in the sweep are copied through; WebSearch finds Buyer (Director CRU / Department Chair / etc.) and Tech Gatekeeper (CISO / IT Security / HIPAA Privacy) candidates; WebFetch scrapes publicly-published **institutional emails** (`clinical.research@emory.edu`) and **personal emails** (faculty bio pages, NIH RePORTER `contact_email`). Pattern-guessed emails are forbidden.
+
+**State and the 30-day re-query gate:** the buying-group-finder maintains its own state at `~/Desktop/nightingale-signals/{commercial|academic}/buying-groups/state/found-companies.json`. If a company / institution already has contact records in that state file from <30 days ago, the next chain run skips it. Skipped companies appear in a "Skipped (recent contacts on file)" section in the new buying-group file.
+
+**Disabling the chain:** if you want sweep-only behavior, delete the `Step 11 — Hand off to buying-group-finder-*` block from the signal-watcher agent file. The signal-watcher will continue to run normally; the contact discovery agent simply won't fire.
+
+**Manual trigger:** you can run buying-group discovery on any sweep file by typing `find buying group from latest commercial sweep` (or `academic`), or `find buying group from {explicit path}`. The 30-day gate still applies.
+
+---
+
 ## Related files
 
 | File | Role |
 |---|---|
-| `.claude/agents/signal-watcher-commercial.md` | The commercial agent prompt |
-| `.claude/agents/signal-watcher-academic.md` | The academic agent prompt |
-| `01-personas/commercial-persona.md` | ICP source of truth for the commercial agent |
-| `01-personas/academic-persona.md` | ICP stub for the academic agent (v0, will firm up after a few sweeps) |
-| `scripts/install-schedule.ps1` | Windows installer for the weekly Monday 7am scheduled task |
-| `scripts/install-schedule.sh` | macOS / Linux installer for the weekly Monday 7am scheduled task |
+| `.claude/agents/signal-watcher-commercial.md` | The commercial sweep agent |
+| `.claude/agents/signal-watcher-academic.md` | The academic sweep agent |
+| `.claude/agents/buying-group-finder-commercial.md` | Commercial contact discovery (auto-chained after the commercial sweep) |
+| `.claude/agents/buying-group-finder-academic.md` | Academic contact discovery + email scraping (auto-chained after the academic sweep) |
+| `01-personas/commercial-persona.md` | ICP source of truth for the commercial side (drives signal qualification AND title-list for contact discovery) |
+| `01-personas/academic-persona.md` | ICP source of truth for the academic side (v0 stub, will firm up after a few sweeps) |
+| `.claude/agents/prospecter.md` | Sibling agent — full company-first prospect discovery pipeline. The signal-watchers complement, not replace, prospecter. |
