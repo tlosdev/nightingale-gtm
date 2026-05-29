@@ -1,0 +1,25 @@
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Obsidian (this repo is NOT an Obsidian vault — do not commit vault state)
+.obsidian/
+
+# Claude Code local user state (per-user settings, not repo state)
+.claude/settings.local.json
+.claude/cache/
+.claude/plans/
+.claude/state/
+
+# Runtime artifacts (these belong on the user's Desktop, never in the repo)
+nightingale-signals/
+
+# Logs
+*.log
