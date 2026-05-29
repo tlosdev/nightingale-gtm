@@ -134,14 +134,21 @@ To remove a schedule later: `CronDelete {schedule_id}`.
 | Manual sweep (commercial) | `scan commercial signals` |
 | Manual sweep (academic) | `scan academic signals` |
 | Manual buying-group discovery on latest sweep | `find buying group from latest commercial sweep` / `find buying group from latest academic sweep` |
+| Manual intro-finder run (delivery + queue) | `intro-finder daily morning` |
+| Manual intro-finder against a specific BG file | `find intros from {absolute path to a buying-group-{date}.md}` |
 | Inspect sweep dedup state | Open `~/Desktop/nightingale-signals/{commercial|academic}/state/seen-signals.json` |
 | Inspect buying-group state | Open `~/Desktop/nightingale-signals/{commercial|academic}/buying-groups/state/found-companies.json` |
+| Inspect intro-finder cursor | Open `~/Desktop/nightingale-signals/{commercial|academic}/intros/state/cursor.json` |
+| Inspect intro-finder found-mutuals | Open `~/Desktop/nightingale-signals/{commercial|academic}/intros/state/found-mutuals.json` |
 | Force a re-surface for a known company | Edit `company_tier_history.{key}.signal_types_seen` in the sweep state JSON to remove one type; next run will re-surface when that type fires |
 | Force re-query of contacts for a known company | Delete the entry from `buying-groups/state/found-companies.json` (or set `last_found` to a date >30 days ago); next buying-group run will re-discover |
-| Clear all state (start over) | Delete the `seen-signals.json` and `found-companies.json` files; next run re-bootstraps |
+| Force re-query of mutuals for a known target | Delete the entry from `intros/state/found-mutuals.json` (or set `last_found` to a date >30 days ago); the next intro-finder queue will re-discover |
+| Clear all state (start over) | Delete the `seen-signals.json`, `found-companies.json`, `cursor.json`, and `found-mutuals.json` files; next runs re-bootstrap |
 | Tighten academic title regex | Edit the buyer/CISO title lists in `01-personas/academic-persona.md` (the agent reads it every run) |
 | Disable a flaky source | Edit the agent file to comment out the source block; e.g. LinkedIn jobs WebSearch occasionally degrades |
 | Disable the buying-group auto-chain | Delete `Step 11 — Hand off to buying-group-finder-*` from the signal-watcher agent file. The sweep will still run; contact discovery just won't fire after it. |
+| Disable the intro-finder daily morning | `Unregister-ScheduledTask -TaskName 'Nightingale-Intro-Finder-Morning' -Confirm:$false` (Windows) / `launchctl unload ~/Library/LaunchAgents/com.nightingale.intro-finder-morning.plist && rm ~/Library/LaunchAgents/com.nightingale.intro-finder-morning.plist` (macOS) / remove the `intro-finder daily morning` line from crontab (Linux). Sweeps + buying-group-finder continue to run. |
+| Refresh LinkedIn cookie / Apify token | Re-run `scripts/setup-secrets.{ps1,sh}`. Prompts per-secret. Clears any active cookie-expired sentinel. |
 
 ---
 
@@ -195,6 +202,114 @@ Every scheduled Monday sweep ends with a **Step 11 hand-off** that invokes the c
 | `.claude/agents/signal-watcher-academic.md` | The academic sweep agent |
 | `.claude/agents/buying-group-finder-commercial.md` | Commercial contact discovery (auto-chained after the commercial sweep) |
 | `.claude/agents/buying-group-finder-academic.md` | Academic contact discovery + email scraping (auto-chained after the academic sweep) |
+| `.claude/agents/intro-finder.md` | Daily warm-intro discovery (Sun-Fri 7am). Consumes the active buying-group file, calls Apify per target via OS-scheduled one-shots, delivers each prior day's intros each morning. |
+| `scripts/setup-secrets.{ps1,sh}` | One-time per-machine setup. Prompts for LinkedIn `li_at` + Apify API token, validates, writes to `~/.nightingale/secrets.json`. |
+| `scripts/run-one-apify-call.{ps1,sh}` | Per-target worker invoked by an OS one-shot task. Calls Apify Actor once, writes result JSON. |
+| `scripts/install-schedule.{ps1,sh}` | Registers the three weekly/daily schedules with the OS scheduler. |
 | `01-personas/commercial-persona.md` | ICP source of truth for the commercial side (drives signal qualification AND title-list for contact discovery) |
 | `01-personas/academic-persona.md` | ICP source of truth for the academic side (v0 stub, will firm up after a few sweeps) |
 | `.claude/agents/prospecter.md` | Sibling agent — full company-first prospect discovery pipeline. The signal-watchers complement, not replace, prospecter. |
+
+---
+
+## Intro-finder — daily warm-intro discovery
+
+The `intro-finder` agent is the third stage of the chain. It runs **every Sun–Fri morning at 7am local** and produces a daily intros file naming who in your LinkedIn network can introduce you to each target in the buying-group file.
+
+### Why it exists
+
+`signal-watcher` finds firing companies. `buying-group-finder` finds individuals at those companies. `intro-finder` answers the next question — "who do I already know who can introduce me to those individuals?" — by looking up mutual LinkedIn connections.
+
+### Daily rhythm
+
+```
+Sun  7am: queue today's batch (1/5 of active BG file). No delivery.
+Mon  7am: deliver Sun's output  + queue today's batch  (signal-watcher + BG-finder also fire Monday)
+Tue  7am: deliver Mon's output  + queue today's batch
+Wed  7am: deliver Tue's output  + queue today's batch
+Thu  7am: deliver Wed's output  + queue today's batch (5th of 5)
+Fri  7am: deliver Thu's output. No queueing.
+Sat:     idle.
+```
+
+Each cycle consumes ONE buying-group file. The cycle that processes Monday's BG file starts the following Sunday — intro-finder intentionally lags BG-finder by one cadence.
+
+### How a queued batch actually fires
+
+The morning agent does not call Apify itself. Instead it:
+
+1. Picks today's batch of ~`total_targets / 5` targets from the cursor.
+2. Computes a random fire time per target in the 8:00–20:00 local window, enforcing min 30s between any two fire times.
+3. Schedules an OS one-shot task per target (Windows Task Scheduler `schtasks /sc once /z`, macOS launchd one-off plist, Linux `at`). Each task runs `scripts/run-one-apify-call.{ps1,sh}` once at the chosen time.
+4. Each worker invocation calls Apify, polls for completion, and writes its result JSON to `~/Desktop/nightingale-signals/{side}/intros/daily-results/{today}/{slug}.json`.
+
+Next morning's delivery phase aggregates yesterday's per-target JSONs into a single human-readable `intros-{yesterday}.md` and fires a push notification.
+
+### Pacing protects your LinkedIn account
+
+LinkedIn's official API does not expose mutual connections. The only programmatic path is a logged-in-session scraper, which violates LinkedIn ToS. The mitigation is **low daily volume + random intra-day pacing + minimum 30s gaps** to keep daily-per-cookie activity well under LinkedIn's behavioral-detection threshold. Do not raise the `daily_quota` or shorten the 30s minimum without thinking carefully about account-restriction risk.
+
+### Secrets setup (one-time per machine)
+
+Run `scripts/setup-secrets.{ps1,sh}` once after cloning. It prompts for two things:
+
+- **LinkedIn `li_at` cookie** — the session cookie from your logged-in LinkedIn browser. The script prints inline instructions (Chrome DevTools → Application → Cookies → `https://www.linkedin.com` → `li_at` → copy Value). Hidden / masked input.
+- **Apify API token** — from `https://console.apify.com/account/integrations`. Hidden / masked input.
+
+Both land in `~/.nightingale/secrets.json` with mode `0600` (Unix) / restricted ACL (Windows). The file lives **outside the repo**, so it cannot be accidentally committed.
+
+The Apify token is validated immediately (`GET /v2/users/me`). The LinkedIn cookie is held opaquely and validated on the first per-target Apify call.
+
+### Cookie expiry
+
+LinkedIn rotates session cookies periodically (usually every few months, sooner if it suspects scraping). When the first per-target call of a day detects auth failure, the worker writes two sentinel files:
+
+- `~/.nightingale/.cookie-expired-active` — blocks all subsequent per-target calls (defense-in-depth).
+- `~/Desktop/nightingale-signals/.cookie-expired-{date}` — read by the next morning's delivery phase.
+
+The next morning's run writes a `COOKIE_EXPIRED-{date}.md` notice to both sides' intros output folders, fires a push notification, and skips queueing until you re-run `scripts/setup-secrets` to refresh and clear the sentinel.
+
+### Cron entry
+
+After running `scripts/install-schedule.{ps1,sh}`, you should see three Nightingale entries:
+
+```
+Nightingale-Commercial-Sweep       Monday 7am
+Nightingale-Academic-Sweep         Monday 7am
+Nightingale-Intro-Finder-Morning   Sun–Fri 7am
+```
+
+The intro-finder entry alone is independent of secrets — even without `setup-secrets`, it runs and writes a `SECRETS_MISSING-{date}.md` notice each morning so you know it's alive. Sweeps + buying-group-finder continue unaffected.
+
+### Output paths
+
+```
+~/Desktop/nightingale-signals/
+├── commercial/
+│   └── intros/
+│       ├── state/cursor.json                       # which BG file is active, daily quota, queue
+│       ├── state/found-mutuals.json                # 30-day re-query gate
+│       ├── daily-results/{date}/{slug}.json        # one file per Apify call
+│       └── output/intros-{date}.md                 # delivered each morning
+└── academic/
+    └── intros/   (same shape)
+```
+
+### ToS / account-safety guidance
+
+Read this before tuning anything:
+
+- The Apify path drives a LinkedIn session via your `li_at` cookie. LinkedIn ToS forbids this. Restriction (temporary 24–72h block) is the realistic worst case at low volume; permanent ban requires repeated offenses.
+- Keep `daily_quota` low. The default `ceil(total_targets / 5)` spread across 5 days targets a low-double-digit daily call count even for large sweeps.
+- Keep the 30s minimum gap. The cascade is designed to space out cookie activity even if random sampling clusters times.
+- Keep the 8–8 window. Calls outside business hours look more obviously automated.
+- If you start seeing CAPTCHA challenges when browsing LinkedIn manually, pause intro-finder for a week: `Unregister-ScheduledTask Nightingale-Intro-Finder-Morning` (Windows) or remove the launchd plist (macOS) or comment the crontab line (Linux). Restart it after the heat dies down.
+- Never log the cookie value. The agent reads only the file existence; the worker reads the cookie and never echoes it.
+
+### What intro-finder does NOT do (v1)
+
+- No Apollo calls. WebSearch + Apify only.
+- No emails. Mutuals are surfaced with names + LinkedIn URLs + current title/company. Email discovery for mutuals is out of scope.
+- No outreach generation. The intros file is the deliverable; the "Hey Bob, would you intro me to Jane?" message is manual.
+- No HubSpot push. Manual follow-up.
+- No backfill if the laptop is asleep during a queued fire time. The OS one-shot is skipped. Future runs may re-process via the 30-day gate window if needed.
