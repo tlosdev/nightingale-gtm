@@ -1,87 +1,134 @@
 # nightingale-gtm
 
-Signal-first prospect-discovery agents for Nightingale's GTM motion. Two agents that scan public clinical-trial, regulatory, funding, and academic-research feeds every Monday morning and drop a qualified-companies markdown file on your Desktop.
+Three signal-first prospect-discovery agents for Nightingale's GTM motion. They run on Windows + Claude Code, hit public clinical-trial / regulatory / funding / academic-research feeds plus your LinkedIn network, and drop daily/weekly markdown files on your Desktop.
 
-- **`signal-watcher-commercial`** — biotech / pharma / medical-device sponsors, 10–200 employees, US. Sources: ClinicalTrials.gov, SEC EDGAR 8-Ks, openFDA, press wires, LinkedIn job postings, Apollo funding.
-- **`signal-watcher-academic`** — US academic medical centers and research hospitals running human-subjects studies. Sources: ClinicalTrials.gov (academic Lead Sponsor or Facility), NIH RePORTER, SBIR/STTR awards, university press / news.
+- **`signal-watcher-commercial`** — biotech / pharma / med-device sponsors, 10–200 employees, US. Sources: ClinicalTrials.gov, SEC EDGAR 8-Ks, openFDA, press wires, LinkedIn job postings, Apollo funding.
+- **`signal-watcher-academic`** — US academic medical centers and research hospitals running human-subjects studies. Sources: ClinicalTrials.gov (academic Lead Sponsor or Facility), NIH RePORTER, SBIR/STTR, university press / news.
+- **`buying-group-finder-{commercial,academic}`** — auto-chained after each sweep. Find Economic Buyer / Tech Gatekeeper / Champion (commercial) or PI / Buyer / Tech Gatekeeper (academic) at every surfaced company / institution via WebSearch.
+- **`intro-finder`** — runs daily Sun–Fri 7am. Spreads the active buying-group file's targets across the week (1/5 per day), invokes Apify per target across a randomized 8am–8pm window, and delivers a per-target + per-mutual warm-intro file each morning.
 
-Both stop at the qualified-list. No outreach generation, no HubSpot sync — those are downstream / out of scope for v1.
+This repo is **Windows-only** as of 2026-05. macOS and Linux are not supported.
 
 ---
 
-## Quick start
+## Quick start (Windows + PowerShell)
 
-You need Claude Code installed and the `claude` CLI on your PATH.
+You need:
+- Windows 10/11 with PowerShell 5.1+
+- Git
+- Claude Code installed, `claude` on PATH
 
-```bash
+```powershell
 # 1. Clone
 git clone https://github.com/tlosdev/nightingale-gtm.git
 cd nightingale-gtm
 
-# 2. Register the weekly schedule (ONE-TIME setup)
-# Windows (from PowerShell):
+# 2. (One-time) Register the schedules
 .\scripts\install-schedule.ps1
 
-# macOS / Linux (from bash/zsh):
-chmod +x scripts/install-schedule.sh
-./scripts/install-schedule.sh
+# 3. (Optional, one-time) Set up secrets for the intro-finder stage
+.\scripts\setup-secrets.ps1
 
-# 3. (Optional) Run a manual sweep right now to verify everything works
+# 4. (Optional) Run a manual sweep right now to verify everything works
 claude -p "scan commercial signals"
 claude -p "scan academic signals"
 ```
 
-After step 2, the two agents will run **automatically every Monday at 7:00 AM local time** for as long as the scheduled task is registered on this machine.
+That's it. Step 2 registers three Windows Task Scheduler entries. Step 3 is **opt-in** — if you only want the signal-watcher + buying-group-finder stages, skip it. Intro-finder will write a `SECRETS_MISSING-{date}.md` notice each morning until you run setup-secrets.
+
+---
+
+## What runs when
+
+| Task | Cadence | What it does |
+|---|---|---|
+| `Nightingale-Commercial-Sweep`       | Monday 7am local         | Commercial sweep + buying-group discovery |
+| `Nightingale-Academic-Sweep`         | Monday 7am local         | Academic sweep + buying-group discovery |
+| `Nightingale-Intro-Finder-Morning`   | Sun–Fri 7am local        | Intro-finder: delivery (Mon–Fri) + queue (Sun–Thu) |
+
+The intro-finder's queue phase additionally registers per-target Windows Task Scheduler one-shots that fire at randomized times between 8am and 8pm on the same day, with a minimum 30-second gap between any two fires. These one-shots auto-delete 2 hours after they run.
 
 Outputs land in:
 
 ```
-~/Desktop/nightingale-signals/
-├── commercial/output/commercial-signals-YYYY-MM-DD.md
-└── academic/output/academic-signals-YYYY-MM-DD.md
+C:\Users\{you}\Desktop\nightingale-signals\
+├── commercial\
+│   ├── output\commercial-signals-YYYY-MM-DD.md          # weekly sweep
+│   ├── buying-groups\output\buying-group-YYYY-MM-DD.md  # weekly buying group
+│   └── intros\output\intros-YYYY-MM-DD.md               # daily intros (when set up)
+└── academic\   (same shape)
 ```
 
-The `~/Desktop/nightingale-signals/` folder is created automatically on the first run of each agent.
+The `nightingale-signals\` folder is created automatically on the first run.
+
+---
+
+## Intro-finder is opt-in
+
+The intro-finder stage is the only one that needs external credentials. Without running `scripts/setup-secrets.ps1`:
+
+- `signal-watcher-{commercial,academic}` ✓ runs every Monday
+- `buying-group-finder-{commercial,academic}` ✓ runs every Monday (auto-chained from sweep)
+- `intro-finder` ⚠ runs but writes `SECRETS_MISSING-{date}.md` notices instead of intros
+
+To enable intros, run `setup-secrets.ps1`. It prompts for four things in one flow:
+
+1. **Apify API token** — from `https://console.apify.com/account/integrations`.
+2. **Apify Actor ID** — pick a LinkedIn-mutual-connections Actor from `https://apify.com/store?search=linkedin+mutual+connections` and paste its identifier (format `{username}~{actor-name}`).
+3. **Your own LinkedIn profile URL** — used once at setup to validate that the chosen Actor can be invoked with your cookie. Costs ~$0.01–0.05 in Apify credit. Example: `https://linkedin.com/in/your-slug`.
+4. **LinkedIn `li_at` cookie** — the session cookie from your logged-in browser. Chrome DevTools → Application → Cookies → `https://www.linkedin.com` → `li_at` → copy Value.
+
+All four are validated in one round-trip. Bad credentials fail fast at setup, not on Monday morning. Re-run anytime to rotate any secret.
+
+**Why all four?** The official LinkedIn API doesn't expose mutual connections. The only programmatic path is an Apify Actor that drives a logged-in browser session via your cookie. This violates LinkedIn ToS — account-restriction risk is low at the pace this agent enforces (max ~10–20 calls/day with random spacing) but it is not zero. See `06-agent-documentation/signal-watcher-setup.md` for the full ToS / safety guidance.
+
+Credentials live in `%USERPROFILE%\.nightingale\secrets.json` with restricted ACL. The file is outside the repo and cannot be accidentally git-add'd.
 
 ---
 
 ## What the install scripts actually do
 
-The "automatic every Monday" behavior is not magic — it relies on the **host OS's scheduler** (Windows Task Scheduler, macOS launchd, Linux cron). The install script registers one entry per agent that runs `claude -p "weekly {commercial|academic} sweep"` from the cloned repo directory at 07:00 every Monday.
+`install-schedule.ps1` does NOT add any cron daemon or background service. It registers three entries with Windows Task Scheduler that invoke `claude -p "..."` with the appropriate trigger phrase. You can see them with:
 
-This means:
-- **The schedule is per-machine.** If you clone the repo on a second machine and want it running there too, re-run the install script on that machine.
-- **Schedules are not committed to the repo.** Cloning the repo gives you the agent files, not the schedule itself. The install script is the bridge.
-- **Your machine has to be on (or wake) at 7:00 AM Monday** for the run to fire. Laptops asleep through the trigger time will run at the next available wake event (Windows + macOS) or skip the window entirely (Linux).
-- **Time is LOCAL.** The scheduled task fires at 7:00 in your machine's local timezone. If you want a specific timezone (e.g., always 7:00 AM Eastern regardless of where you travel), edit the `-At` argument in `install-schedule.ps1` or the `StartCalendarInterval`/cron expression in `install-schedule.sh` before running.
+```powershell
+Get-ScheduledTask -TaskName 'Nightingale-*'
+```
 
-To uninstall:
+Implications:
 
-```bash
-# Windows:
-Unregister-ScheduledTask -TaskName 'Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep' -Confirm:$false
+- **The schedule is per-machine.** If you clone the repo on a second machine and want it running there too, re-run `install-schedule.ps1` on that machine.
+- **Schedules are not committed to the repo.** Cloning gives you the agent files, not the schedule itself. The install script is the bridge.
+- **Tasks run with `-LogonType Interactive`.** They fire only when you're logged in. If your laptop is locked but logged-in and on AC, Windows will wake to fire the trigger. If you log out, tasks queue and fire next login.
+- **Time is LOCAL.** Edit the `-At "7:00am"` argument in `install-schedule.ps1` before running if you want a different fire time.
 
-# macOS:
-launchctl unload ~/Library/LaunchAgents/com.nightingale.commercial-sweep.plist
-launchctl unload ~/Library/LaunchAgents/com.nightingale.academic-sweep.plist
-rm ~/Library/LaunchAgents/com.nightingale.{commercial,academic}-sweep.plist
+To uninstall everything:
 
-# Linux:
-crontab -e   # delete the two lines tagged "# nightingale-gtm"
+```powershell
+Unregister-ScheduledTask -TaskName 'Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning' -Confirm:$false
+```
+
+To delete credentials:
+
+```powershell
+Remove-Item "$env:USERPROFILE\.nightingale\secrets.json" -Force
 ```
 
 ---
 
 ## Prerequisites
 
-1. **Claude Code** installed locally (Mac, Windows, or Linux), with `claude` on your PATH.
-2. **MCP connectors authorized** in your Claude Code instance:
-   - **ClinicalTrials.gov** — required for both agents.
-   - **Apollo.io** — required for the commercial agent (the free tier is enough — Apollo enrichment is gated to Strong-tier companies only).
-   - **WebFetch + WebSearch** — built into Claude Code; used by every other source.
-3. **Internet access** to: `efts.sec.gov`, `api.fda.gov`, `api.reporter.nih.gov`, `api.www.sbir.gov`, plus the WebSearch index.
+1. **Windows 10/11** with PowerShell 5.1+.
+2. **Claude Code** installed, with `claude` on PATH.
+3. **MCP connectors authorized** in your Claude Code instance:
+   - **ClinicalTrials.gov** — required for both sweeps.
+   - **Apollo.io** — required for the commercial sweep (the free tier is enough — Apollo enrichment is gated to Strong-tier companies only).
+   - **WebFetch + WebSearch** — built into Claude Code.
+4. **For intro-finder ONLY**:
+   - An **Apify account** with a paid or trial credit balance (LinkedIn-mutual-connections Actors typically run RESIDENTIAL proxy, ~$0.10–0.50 per call).
+   - A **LinkedIn account** in good standing.
+5. **Internet access** to: `efts.sec.gov`, `api.fda.gov`, `api.reporter.nih.gov`, `api.www.sbir.gov`, `api.apify.com`, plus the WebSearch index.
 
-No API keys, no `.env`, no setup script beyond the schedule installer. MCP connector auth is managed inside Claude Code.
+PowerShell ExecutionPolicy: the install + setup scripts check this on startup and warn if it's `Restricted` or `AllSigned`. Recommended: `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`.
 
 ---
 
@@ -89,37 +136,43 @@ No API keys, no `.env`, no setup script beyond the schedule installer. MCP conne
 
 ```
 nightingale-gtm/
-├── README.md                                       # this file
-├── CLAUDE.md                                       # project context for Claude Code
+├── README.md                                            # this file
+├── CLAUDE.md                                            # project context for Claude Code
+├── .gitignore
 ├── .claude/
 │   └── agents/
-│       ├── signal-watcher-commercial.md            # the commercial agent prompt
-│       └── signal-watcher-academic.md              # the academic agent prompt
+│       ├── signal-watcher-commercial.md
+│       ├── signal-watcher-academic.md
+│       ├── buying-group-finder-commercial.md
+│       ├── buying-group-finder-academic.md
+│       └── intro-finder.md
 ├── 01-personas/
-│   ├── commercial-persona.md                       # ICP source of truth for commercial
-│   └── academic-persona.md                         # ICP stub for academic (v0)
+│   ├── commercial-persona.md
+│   └── academic-persona.md
 ├── 06-agent-documentation/
-│   └── signal-watcher-setup.md                     # detailed setup + troubleshooting
+│   └── signal-watcher-setup.md                          # detailed setup + troubleshooting
 └── scripts/
-    ├── install-schedule.ps1                        # Windows installer
-    └── install-schedule.sh                         # macOS + Linux installer
+    ├── install-schedule.ps1                             # registers 3 Task Scheduler entries
+    ├── setup-secrets.ps1                                # captures Apify + LinkedIn credentials
+    └── run-one-apify-call.ps1                           # per-target worker (called by intro-finder one-shots)
 ```
 
 ---
 
 ## What this does NOT do (v1)
 
-- No outreach message generation — the qualified-list markdown file is the deliverable.
+- No outreach message generation — the qualified-list / buying-group / intros markdown files are the deliverables.
 - No HubSpot company / contact / association creation.
 - No Apollo enrichment on Weak-tier commercial companies (free-tier credit gate).
 - No Apollo at all for the academic agent.
 - No conference-abstract scraping (ASCO / AHA / JPM) — quarterly cadence does not fit a weekly cron.
-- No Crunchbase or other paid data sources — Apollo `last_raised_at` covers the high-value commercial funding cases.
+- No emails for mutuals in intros (LinkedIn doesn't expose them; pattern-guessing is forbidden after a 2026-05-06 5-bounce incident).
+- No macOS or Linux support — Windows only.
 
-These are explicitly deferred. Adding any of them is a follow-up project, not a v1 change.
+These are explicitly deferred / out of scope. Adding any of them is a follow-up project, not a v1 change.
 
 ---
 
 ## Troubleshooting
 
-See `06-agent-documentation/signal-watcher-setup.md` for first-run verification steps, common operations, and a troubleshooting checklist (Apollo gating, LinkedIn search index degradation, cross-agent boundary mis-fires, etc.).
+See `06-agent-documentation/signal-watcher-setup.md` for first-run verification steps, common operations, cookie-expiry recovery, and a troubleshooting checklist (Apollo gating, LinkedIn search index degradation, cross-agent boundary mis-fires, Apify 404 / 429 / cookie-rejection diagnostics).

@@ -21,5 +21,8 @@ desktop.ini
 # Runtime artifacts (these belong on the user's Desktop, never in the repo)
 nightingale-signals/
 
+# Per-user secrets (live at $env:USERPROFILE\.nightingale\ by design; defense-in-depth)
+.nightingale/
+
 # Logs
 *.log

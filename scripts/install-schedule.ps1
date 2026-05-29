@@ -27,6 +27,16 @@
 
 $ErrorActionPreference = 'Stop'
 
+# --- ExecutionPolicy preflight ----------------------------------------------
+$policy = Get-ExecutionPolicy -Scope CurrentUser
+if ($policy -in @('Restricted', 'AllSigned')) {
+    Write-Warning "PowerShell ExecutionPolicy for CurrentUser is '$policy'."
+    Write-Warning "The scheduled tasks invoke 'powershell.exe -ExecutionPolicy Bypass ...' so they will run,"
+    Write-Warning "but manual reruns of these scripts may fail. Recommended fix:"
+    Write-Warning "    Set-ExecutionPolicy RemoteSigned -Scope CurrentUser"
+    Write-Host ''
+}
+
 # Resolve the repo root (one directory above this script)
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Write-Host "Repo root: $repoRoot"

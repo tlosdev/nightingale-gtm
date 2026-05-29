@@ -31,9 +31,7 @@ Both agents write to the **user's Desktop**, not into the cloned repo. This keep
         └── academic-signals-YYYY-MM-DD.md
 ```
 
-The `~` resolves correctly per-OS:
-- Windows PowerShell: `$env:USERPROFILE\Desktop\nightingale-signals\...`
-- macOS / Linux: `$HOME/Desktop/nightingale-signals/...`
+The `~` resolves on Windows to `$env:USERPROFILE\Desktop\nightingale-signals\...`.
 
 The folder tree is created automatically on first run — no manual `mkdir` needed.
 
@@ -41,7 +39,7 @@ The folder tree is created automatically on first run — no manual `mkdir` need
 
 ## Prerequisites
 
-1. **Claude Code** installed locally (Mac, Windows, or Linux).
+1. **Windows 10/11** with PowerShell 5.1+ (Claude Code's `claude` CLI on PATH). This repo is Windows-only as of the 2026-05 cleanup; macOS and Linux are not supported.
 2. **The Nightingale repo cloned locally** — open Claude Code from the cloned directory so the agents under `.claude/agents/` are discovered.
 3. **MCP connectors authorized** for your Claude Code instance:
    - **ClinicalTrials.gov** — required for both agents (Source A in commercial, Source A in academic). No API key needed; just the MCP connector.
@@ -147,8 +145,8 @@ To remove a schedule later: `CronDelete {schedule_id}`.
 | Tighten academic title regex | Edit the buyer/CISO title lists in `01-personas/academic-persona.md` (the agent reads it every run) |
 | Disable a flaky source | Edit the agent file to comment out the source block; e.g. LinkedIn jobs WebSearch occasionally degrades |
 | Disable the buying-group auto-chain | Delete `Step 11 — Hand off to buying-group-finder-*` from the signal-watcher agent file. The sweep will still run; contact discovery just won't fire after it. |
-| Disable the intro-finder daily morning | `Unregister-ScheduledTask -TaskName 'Nightingale-Intro-Finder-Morning' -Confirm:$false` (Windows) / `launchctl unload ~/Library/LaunchAgents/com.nightingale.intro-finder-morning.plist && rm ~/Library/LaunchAgents/com.nightingale.intro-finder-morning.plist` (macOS) / remove the `intro-finder daily morning` line from crontab (Linux). Sweeps + buying-group-finder continue to run. |
-| Refresh LinkedIn cookie / Apify token | Re-run `scripts/setup-secrets.{ps1,sh}`. Prompts per-secret. Clears any active cookie-expired sentinel. |
+| Disable the intro-finder daily morning | `Unregister-ScheduledTask -TaskName 'Nightingale-Intro-Finder-Morning' -Confirm:$false`. Sweeps + buying-group-finder continue to run. |
+| Refresh LinkedIn cookie / Apify token / Actor ID | Re-run `scripts/setup-secrets.ps1`. Prompts per-secret. Clears any active cookie-expired sentinel. |
 
 ---
 
@@ -167,7 +165,7 @@ These are explicitly deferred. Adding any of them is a follow-up project, not a 
 
 ## Troubleshooting
 
-**The agent fails at Step 0 with a permission error on `~/Desktop/`.** Some corporate-managed Windows or macOS profiles restrict the Desktop folder. Manually create `~/Desktop/nightingale-signals/` once with the OS file manager and rerun — Step 0 will accept an existing folder and proceed.
+**The agent fails at Step 0 with a permission error on `~/Desktop/`.** Some corporate-managed Windows profiles restrict the Desktop folder. Manually create `~/Desktop/nightingale-signals/` once via File Explorer and rerun — Step 0 will accept an existing folder and proceed.
 
 **Apollo returns `API_INACCESSIBLE` / rate limit.** The commercial agent's Step 2 Source F and Step 6 enrichment both depend on Apollo. If Apollo is gated, the commercial agent will log the failure and continue with the other five sources — you'll get a qualified-list missing the funding signal and missing Apollo enrichment fields. Restore your Apollo connector and re-run.
 
@@ -203,9 +201,9 @@ Every scheduled Monday sweep ends with a **Step 11 hand-off** that invokes the c
 | `.claude/agents/buying-group-finder-commercial.md` | Commercial contact discovery (auto-chained after the commercial sweep) |
 | `.claude/agents/buying-group-finder-academic.md` | Academic contact discovery + email scraping (auto-chained after the academic sweep) |
 | `.claude/agents/intro-finder.md` | Daily warm-intro discovery (Sun-Fri 7am). Consumes the active buying-group file, calls Apify per target via OS-scheduled one-shots, delivers each prior day's intros each morning. |
-| `scripts/setup-secrets.{ps1,sh}` | One-time per-machine setup. Prompts for LinkedIn `li_at` + Apify API token, validates, writes to `~/.nightingale/secrets.json`. |
-| `scripts/run-one-apify-call.{ps1,sh}` | Per-target worker invoked by an OS one-shot task. Calls Apify Actor once, writes result JSON. |
-| `scripts/install-schedule.{ps1,sh}` | Registers the three weekly/daily schedules with the OS scheduler. |
+| `scripts/setup-secrets.ps1` | One-time per-machine setup. Prompts for Apify API token + Actor ID + your LinkedIn profile URL + `li_at` cookie. Validates all four against Apify in one round-trip. Writes `~/.nightingale/secrets.json` with restricted ACL. |
+| `scripts/run-one-apify-call.ps1` | Per-target worker invoked by a Windows Scheduled Task one-shot. Calls Apify Actor once via header auth, polls, writes result JSON atomically. Handles 404 / 429 / cookie-expiry as distinct statuses. |
+| `scripts/install-schedule.ps1` | Registers the three Windows Task Scheduler entries (Mon-only sweeps + Sun-Fri intro-finder). |
 | `01-personas/commercial-persona.md` | ICP source of truth for the commercial side (drives signal qualification AND title-list for contact discovery) |
 | `01-personas/academic-persona.md` | ICP source of truth for the academic side (v0 stub, will firm up after a few sweeps) |
 | `.claude/agents/prospecter.md` | Sibling agent — full company-first prospect discovery pipeline. The signal-watchers complement, not replace, prospecter. |
@@ -240,7 +238,7 @@ The morning agent does not call Apify itself. Instead it:
 
 1. Picks today's batch of ~`total_targets / 5` targets from the cursor.
 2. Computes a random fire time per target in the 8:00–20:00 local window, enforcing min 30s between any two fire times.
-3. Schedules an OS one-shot task per target (Windows Task Scheduler `schtasks /sc once /z`, macOS launchd one-off plist, Linux `at`). Each task runs `scripts/run-one-apify-call.{ps1,sh}` once at the chosen time.
+3. Registers a Windows Task Scheduler one-shot per target using `Register-ScheduledTask -Once -At [datetime]`. Each task runs `scripts/run-one-apify-call.ps1` once at the chosen time. The task auto-deletes 2 hours after firing (`-DeleteExpiredTaskAfter`).
 4. Each worker invocation calls Apify, polls for completion, and writes its result JSON to `~/Desktop/nightingale-signals/{side}/intros/daily-results/{today}/{slug}.json`.
 
 Next morning's delivery phase aggregates yesterday's per-target JSONs into a single human-readable `intros-{yesterday}.md` and fires a push notification.
@@ -251,14 +249,16 @@ LinkedIn's official API does not expose mutual connections. The only programmati
 
 ### Secrets setup (one-time per machine)
 
-Run `scripts/setup-secrets.{ps1,sh}` once after cloning. It prompts for two things:
+Run `scripts/setup-secrets.ps1` once after cloning. It prompts for four things:
 
-- **LinkedIn `li_at` cookie** — the session cookie from your logged-in LinkedIn browser. The script prints inline instructions (Chrome DevTools → Application → Cookies → `https://www.linkedin.com` → `li_at` → copy Value). Hidden / masked input.
 - **Apify API token** — from `https://console.apify.com/account/integrations`. Hidden / masked input.
+- **Apify Actor ID** — the identifier of a LinkedIn-mutual-connections Actor from the Apify store (format `{username}~{actor-name}`). Browse `https://apify.com/store?search=linkedin+mutual+connections` to pick one.
+- **Your own LinkedIn profile URL** — used only at setup time to validate that the chosen Actor can be invoked with your cookie. Costs ~$0.01–0.05 in Apify credit. Example: `https://linkedin.com/in/your-slug`.
+- **LinkedIn `li_at` cookie** — the session cookie from your logged-in LinkedIn browser. Hidden / masked input. The script prints inline instructions (Chrome DevTools → Application → Cookies → `https://www.linkedin.com` → `li_at` → copy Value).
 
-Both land in `~/.nightingale/secrets.json` with mode `0600` (Unix) / restricted ACL (Windows). The file lives **outside the repo**, so it cannot be accidentally committed.
+All four land in `~/.nightingale/secrets.json` with restricted ACL (only the current user has access). The file lives **outside the repo**, so it cannot be accidentally committed.
 
-The Apify token is validated immediately (`GET /v2/users/me`). The LinkedIn cookie is held opaquely and validated on the first per-target Apify call.
+The setup script validates all credentials in one round-trip: Apify token → `/v2/users/me`, then a single Actor run against your own profile URL using the cookie. 404 → "Actor not found"; auth-failure indicators in the result → "Cookie rejected, refresh". Bad credentials fail fast at setup, not on Monday morning.
 
 ### Cookie expiry
 
@@ -271,7 +271,7 @@ The next morning's run writes a `COOKIE_EXPIRED-{date}.md` notice to both sides'
 
 ### Cron entry
 
-After running `scripts/install-schedule.{ps1,sh}`, you should see three Nightingale entries:
+After running `scripts/install-schedule.ps1`, you should see three Nightingale entries:
 
 ```
 Nightingale-Commercial-Sweep       Monday 7am
@@ -303,7 +303,7 @@ Read this before tuning anything:
 - Keep `daily_quota` low. The default `ceil(total_targets / 5)` spread across 5 days targets a low-double-digit daily call count even for large sweeps.
 - Keep the 30s minimum gap. The cascade is designed to space out cookie activity even if random sampling clusters times.
 - Keep the 8–8 window. Calls outside business hours look more obviously automated.
-- If you start seeing CAPTCHA challenges when browsing LinkedIn manually, pause intro-finder for a week: `Unregister-ScheduledTask Nightingale-Intro-Finder-Morning` (Windows) or remove the launchd plist (macOS) or comment the crontab line (Linux). Restart it after the heat dies down.
+- If you start seeing CAPTCHA challenges when browsing LinkedIn manually, pause intro-finder for a week: `Unregister-ScheduledTask -TaskName 'Nightingale-Intro-Finder-Morning' -Confirm:$false`. Restart it after the heat dies down by re-running `scripts/install-schedule.ps1`.
 - Never log the cookie value. The agent reads only the file existence; the worker reads the cookie and never echoes it.
 
 ### What intro-finder does NOT do (v1)

@@ -9,25 +9,28 @@
     result for downstream delivery aggregation.
 
 .PARAMETER TargetUrl
-    The LinkedIn profile URL of the target (the person we want mutual connections
-    against).
+    The LinkedIn profile URL of the target.
 
 .PARAMETER TargetMetaPath
-    Path to a small JSON file written by the morning agent containing the target's
-    metadata (name, title, company, role_bucket, signal_tier, buying_group_source).
+    Path to a JSON file with target metadata (name, title, company, role_bucket,
+    signal_tier, buying_group_source).
 
 .PARAMETER ResultPath
     Where to write the result JSON. Convention:
     ~/Desktop/nightingale-signals/{side}/intros/daily-results/{date}/{slug}.json
 
 .PARAMETER ActorId
-    The Apify Actor ID to invoke. Default: $env:NIGHTINGALE_APIFY_ACTOR or
-    'apimaestro/linkedin-profile-batch-scraper' as placeholder (replace with the
-    actual mutual-connections actor when pinned).
+    Optional override. If omitted, reads `apify_actor_id` from secrets.json. Env
+    var NIGHTINGALE_APIFY_ACTOR also overrides (priority: param > env var > secrets).
 
 .NOTES
-    Never logs the LinkedIn cookie value. Detects cookie-expired conditions and
-    writes sentinel files so the morning agent can short-circuit subsequent calls.
+    - Apify token is passed via Authorization header (never URL query) so it does
+      not leak into the Windows process command-line.
+    - Detects 404 / 429 / cookie-expiry separately and writes distinct result
+      statuses so the morning agent can surface actionable errors.
+    - Result JSON is written atomically (tmp file + Move-Item).
+
+    Requires Windows + PowerShell 5.1+.
 #>
 
 param(
@@ -35,7 +38,7 @@ param(
     [Parameter(Mandatory=$true)] [string]$TargetUrl,
     [Parameter(Mandatory=$true)] [string]$TargetMetaPath,
     [Parameter(Mandatory=$true)] [string]$ResultPath,
-    [string]$ActorId = $(if ($env:NIGHTINGALE_APIFY_ACTOR) { $env:NIGHTINGALE_APIFY_ACTOR } else { 'apimaestro~linkedin-profile-batch-scraper' })
+    [string]$ActorId = $null
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,7 +52,11 @@ $sentinelToday       = Join-Path $env:USERPROFILE "Desktop\nightingale-signals\.
 function Write-Result($payload) {
     $dir = Split-Path -Parent $ResultPath
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $payload | ConvertTo-Json -Depth 8 | Set-Content -Path $ResultPath -Encoding utf8
+    # Atomic write: tmp file then Move-Item. Prevents the delivery aggregator
+    # from seeing a half-written JSON if this process is killed mid-flight.
+    $tmpPath = "$ResultPath.tmp"
+    $payload | ConvertTo-Json -Depth 8 | Set-Content -Path $tmpPath -Encoding utf8
+    Move-Item -Path $tmpPath -Destination $ResultPath -Force
 }
 
 function Load-Meta {
@@ -62,33 +69,34 @@ function Load-Meta {
 
 $meta = Load-Meta
 $base = [ordered]@{
-    side                 = $Side
-    target_url           = $TargetUrl
-    target_meta          = $meta
-    actor_id             = $ActorId
-    invoked_at           = (Get-Date -Format 'o')
-    status               = $null
-    apify_run_id         = $null
-    mutuals              = @()
-    error                = $null
+    side          = $Side
+    target_url    = $TargetUrl
+    target_meta   = $meta
+    actor_id      = $null
+    invoked_at    = (Get-Date -Format 'o')
+    status        = $null
+    apify_run_id  = $null
+    mutuals       = @()
+    error         = $null
 }
 
-# Secrets missing?
+# --- Secrets missing? --------------------------------------------------------
 if (-not (Test-Path $secretsPath)) {
     $base.status = 'secrets_missing'
-    $base.error  = "Secrets file not found at $secretsPath. Run scripts/setup-secrets first."
+    $base.error  = "Secrets file not found at $secretsPath. Run scripts/setup-secrets.ps1 first."
     Write-Result $base
     exit 0
 }
 
-# Sentinel active?
+# --- Sentinel active? --------------------------------------------------------
 if (Test-Path $sentinelActive) {
     $base.status = 'skipped_cookie_expired'
-    $base.error  = 'Cookie-expired sentinel active. Re-run scripts/setup-secrets.'
+    $base.error  = 'Cookie-expired sentinel active. Re-run scripts/setup-secrets.ps1 to refresh.'
     Write-Result $base
     exit 0
 }
 
+# --- Read secrets ------------------------------------------------------------
 try {
     $secrets = Get-Content $secretsPath -Raw | ConvertFrom-Json
 } catch {
@@ -102,40 +110,68 @@ $apifyToken = $secrets.apify_api_token
 $liAt       = $secrets.linkedin_li_at
 if ([string]::IsNullOrWhiteSpace($apifyToken) -or [string]::IsNullOrWhiteSpace($liAt)) {
     $base.status = 'secrets_incomplete'
-    $base.error  = 'Missing apify_api_token or linkedin_li_at in secrets file.'
+    $base.error  = 'Missing apify_api_token or linkedin_li_at in secrets file. Re-run scripts/setup-secrets.ps1.'
     Write-Result $base
     exit 0
 }
 
-# Kick off Apify run
-$runStartUri = "https://api.apify.com/v2/acts/$ActorId/runs?token=$apifyToken"
+# Actor ID resolution: param > env > secrets
+if ([string]::IsNullOrWhiteSpace($ActorId)) {
+    if ($env:NIGHTINGALE_APIFY_ACTOR) {
+        $ActorId = $env:NIGHTINGALE_APIFY_ACTOR
+    } elseif ($secrets.apify_actor_id) {
+        $ActorId = $secrets.apify_actor_id
+    }
+}
+if ([string]::IsNullOrWhiteSpace($ActorId)) {
+    $base.status = 'actor_id_missing'
+    $base.error  = 'No Apify Actor ID resolved. Re-run scripts/setup-secrets.ps1 (or set NIGHTINGALE_APIFY_ACTOR).'
+    Write-Result $base
+    exit 0
+}
+$base.actor_id = $ActorId
+
+# --- Start Apify run (header auth; no token in URL) -------------------------
+$headers = @{ Authorization = "Bearer $apifyToken" }
 $runInput = @{
     targetUrl          = $TargetUrl
     sessionCookie      = $liAt
     proxyConfiguration = @{
-        useApifyProxy     = $true
-        apifyProxyGroups  = @('RESIDENTIAL')
+        useApifyProxy    = $true
+        apifyProxyGroups = @('RESIDENTIAL')
     }
 }
 
 $runId = $null
 try {
-    $startResp = Invoke-RestMethod -Uri $runStartUri -Method Post `
+    $startResp = Invoke-RestMethod `
+        -Uri "https://api.apify.com/v2/acts/$ActorId/runs" `
+        -Headers $headers -Method Post `
         -Body ($runInput | ConvertTo-Json -Depth 5) `
         -ContentType 'application/json' `
         -TimeoutSec 30
     $runId = $startResp.data.id
-    if (-not $runId) { throw "Apify did not return a run id" }
+    if (-not $runId) { throw 'Apify did not return a run id' }
 } catch {
-    $base.status = 'apify_start_failed'
-    $base.error  = "Could not start Apify run: $($_.Exception.Message)"
+    $msg = $_.Exception.Message
+    if ($msg -match '404') {
+        $base.status = 'apify_actor_not_found'
+        $base.error  = "Actor '$ActorId' not found in your Apify account. Verify in https://console.apify.com/actors and re-run scripts/setup-secrets.ps1 to update."
+    } elseif ($msg -match '429') {
+        $retryAfter = $null
+        try { $retryAfter = $_.Exception.Response.Headers['Retry-After'] } catch {}
+        $base.status = 'apify_rate_limited'
+        $base.error  = "Apify rate-limited (429). Retry-After: $retryAfter. Likely hit free-tier monthly quota; intros resume next cycle."
+    } else {
+        $base.status = 'apify_start_failed'
+        $base.error  = "Could not start Apify run: $msg"
+    }
     Write-Result $base
     exit 0
 }
-
 $base.apify_run_id = $runId
 
-# Poll for completion (exponential backoff, 5s -> 30s cap, ~3min total)
+# --- Poll for completion (5s -> 30s cap, ~3min total) -----------------------
 $delay      = 5
 $totalSlept = 0
 $maxTotal   = 180
@@ -144,11 +180,20 @@ while ($totalSlept -lt $maxTotal) {
     Start-Sleep -Seconds $delay
     $totalSlept += $delay
     try {
-        $runStatus = Invoke-RestMethod -Uri "https://api.apify.com/v2/acts/$ActorId/runs/$runId`?token=$apifyToken" -Method Get -TimeoutSec 20
+        $runStatus = Invoke-RestMethod `
+            -Uri "https://api.apify.com/v2/acts/$ActorId/runs/$runId" `
+            -Headers $headers -Method Get -TimeoutSec 20
         $status = $runStatus.data.status
-        if ($status -in @('SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT', 'TIMEOUT')) { break }
+        if ($status -in @('SUCCEEDED','FAILED','ABORTED','TIMED-OUT','TIMEOUT')) { break }
     } catch {
-        # transient; keep polling
+        $msg = $_.Exception.Message
+        if ($msg -match '429') {
+            $base.status = 'apify_rate_limited'
+            $base.error  = "Apify rate-limited (429) mid-poll. Run $runId orphaned."
+            Write-Result $base
+            exit 0
+        }
+        # other transients: keep polling
     }
     if ($delay -lt 30) { $delay = [Math]::Min($delay * 2, 30) }
 }
@@ -160,17 +205,25 @@ if ($status -ne 'SUCCEEDED') {
     exit 0
 }
 
-# Fetch dataset items
+# --- Fetch dataset items -----------------------------------------------------
 try {
-    $items = Invoke-RestMethod -Uri "https://api.apify.com/v2/acts/$ActorId/runs/$runId/dataset/items?token=$apifyToken" -Method Get -TimeoutSec 30
+    $items = Invoke-RestMethod `
+        -Uri "https://api.apify.com/v2/acts/$ActorId/runs/$runId/dataset/items" `
+        -Headers $headers -Method Get -TimeoutSec 30
 } catch {
-    $base.status = 'apify_fetch_failed'
-    $base.error  = "Could not fetch dataset items: $($_.Exception.Message)"
+    $msg = $_.Exception.Message
+    if ($msg -match '429') {
+        $base.status = 'apify_rate_limited'
+        $base.error  = "Apify rate-limited (429) fetching dataset. Run $runId orphaned."
+    } else {
+        $base.status = 'apify_fetch_failed'
+        $base.error  = "Could not fetch dataset items: $msg"
+    }
     Write-Result $base
     exit 0
 }
 
-# Detect cookie expiry signals (Actor-specific; common indicators)
+# --- Detect cookie-expiry indicators in payload -----------------------------
 $flagged = $false
 if ($items -is [array] -and $items.Count -gt 0) {
     foreach ($i in $items) {
@@ -181,21 +234,20 @@ if ($items -is [array] -and $items.Count -gt 0) {
         }
     }
 }
-if (-not $items -or ($items -is [array] -and $items.Count -eq 0)) {
-    # Empty result alone is ambiguous; combined with the absence of a successful
-    # auth, the Actor would typically return at least a structural row. We only
-    # flag cookie-expired when explicit indicators appear in payload.
-}
 
 if ($flagged) {
-    # Write sentinel files so subsequent calls/morning routines can short-circuit
+    # Write sentinel files so subsequent calls / next morning short-circuit
     try {
+        # Empty marker file: New-Item -Force is intentional here (idempotent;
+        # file content is meaningless, only its existence matters).
         New-Item -ItemType File -Path $sentinelActive -Force | Out-Null
         $sentinelDir = Split-Path -Parent $sentinelToday
-        if (-not (Test-Path $sentinelDir)) { New-Item -ItemType Directory -Path $sentinelDir -Force | Out-Null }
+        if (-not (Test-Path $sentinelDir)) {
+            New-Item -ItemType Directory -Path $sentinelDir -Force | Out-Null
+        }
         New-Item -ItemType File -Path $sentinelToday -Force | Out-Null
     } catch {
-        # best-effort; do not fail the result write
+        # Best-effort; do not fail the result write.
     }
     $base.status = 'cookie_expired'
     $base.error  = 'Apify Actor returned auth-failure indicators. Cookie sentinel set.'
@@ -203,7 +255,7 @@ if ($flagged) {
     exit 0
 }
 
-# Normalize + dedupe mutuals
+# --- Normalize + dedupe mutuals ---------------------------------------------
 $mutuals = @()
 $seen = @{}
 foreach ($i in @($items)) {

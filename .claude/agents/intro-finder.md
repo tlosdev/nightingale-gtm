@@ -18,7 +18,7 @@ You handle BOTH commercial and academic sides serially in one invocation. Each s
 
 **Hard constraint: the LinkedIn `li_at` cookie is never logged, echoed, or persisted anywhere except `~/.nightingale/secrets.json`.** You never read its value directly from this agent — the per-call worker script reads it.
 
-This agent is **portable across clones**. All paths are repo-relative or anchored at `~/Desktop/nightingale-signals/{commercial|academic}/intros/` and `~/.nightingale/`. `~` expands per-user on Windows PowerShell, macOS, and Linux.
+This agent is **Windows-only** (Windows 10/11, PowerShell 5.1+). All paths use the `$env:USERPROFILE`-anchored `~` convention and resolve to `C:\Users\{user}\.nightingale\` and `C:\Users\{user}\Desktop\nightingale-signals\` at runtime. Use the PowerShell tool (not Bash) for all shell operations, including OS task scheduling.
 
 ---
 
@@ -60,9 +60,20 @@ For each side (commercial, academic):
    ```
 3. If `~/Desktop/nightingale-signals/{side}/intros/state/found-mutuals.json` does not exist, write `{"schema_version": 1, "last_run_date": null, "found_mutuals": {}}`.
 
+### Stale artifact cleanup (sweep before continuing)
+
+Before checking secrets, sweep stale artifacts from the runtime tree (PowerShell):
+
+1. Delete every file matching `~/Desktop/nightingale-signals/.cookie-expired-*` whose name-embedded date is older than 7 days.
+2. Delete every `~/Desktop/nightingale-signals/{side}/intros/daily-results/{date}/` folder whose date is older than 30 days. The 30-day boundary matches the re-query gate — anything older won't be re-referenced.
+
+This keeps the Desktop tree from accumulating cleartext target metadata + LinkedIn URLs over months.
+
+### Secrets file check
+
 Then check `~/.nightingale/secrets.json`:
 
-- **If missing**: write `~/Desktop/nightingale-signals/{side}/intros/output/SECRETS_MISSING-{today}.md` for BOTH sides describing the fix (`run scripts/setup-secrets.{ps1|sh}`). Fire ONE `PushNotification`: `"Intro-finder skipped — secrets file missing. Run scripts/setup-secrets to enable."` Exit cleanly. The upstream signal-watcher + buying-group-finder chains are unaffected.
+- **If missing**: write `~/Desktop/nightingale-signals/{side}/intros/output/SECRETS_MISSING-{today}.md` for BOTH sides describing the fix (`run scripts/setup-secrets.ps1`). Fire ONE `PushNotification`: `"Intro-finder skipped — secrets file missing. Run scripts/setup-secrets.ps1 to enable."` Exit cleanly. The upstream signal-watcher + buying-group-finder chains are unaffected.
 - **If present**: continue. Do NOT read the cookie value from this agent — only verify the file exists.
 
 ---
@@ -131,7 +142,7 @@ If today's batch is empty (active file is fully processed and no other file was 
 - Enforce a minimum 30-second gap between consecutive timestamps: walk the sorted list; if `timestamps[i] - timestamps[i-1] < 30s`, push `timestamps[i]` to `timestamps[i-1] + 30s` and cascade forward.
 - If the cascade pushes any timestamp past 20:00:00, fail gracefully: trim the batch to those that still fit, log `"{side}: batch trimmed to {M} of {N} due to fire-window saturation"`, and put the trimmed targets back at the front of `cursor.targets_remaining`.
 
-### 2f. Schedule N OS one-shot tasks
+### 2f. Schedule N Windows Task Scheduler one-shots (PowerShell only)
 
 For each target in today's batch:
 
@@ -148,21 +159,24 @@ For each target in today's batch:
    }
    ```
 2. Compute the result-file destination: `~/Desktop/nightingale-signals/{side}/intros/daily-results/{today}/{linkedin_slug}.json`.
-3. Schedule a per-target OS one-shot task at the computed fire time:
-   - **Windows**: shell out to PowerShell:
-     ```
-     schtasks /create /sc once /st HH:MM:SS /sd YYYY-MM-DD `
-       /tn "Nightingale-Intro-{side}-{today}-{slug}" `
-       /tr "powershell.exe -ExecutionPolicy Bypass -NoProfile -File ""{repo_root}\scripts\run-one-apify-call.ps1"" -Side {side} -TargetUrl ""{url}"" -TargetMetaPath ""{meta_path}"" -ResultPath ""{result_path}""" `
-       /f /z
-     ```
-     (`/z` deletes the task after it runs once.)
-   - **macOS**: write a temporary LaunchAgent plist to `~/Library/LaunchAgents/com.nightingale.intro-{side}-{today}-{slug}.plist` with `StartCalendarInterval` for the fire time, ProgramArguments invoking `/bin/bash -lc "{repo_root}/scripts/run-one-apify-call.sh --side {side} --target-url {url} --target-meta-path {meta_path} --result-path {result_path}; launchctl unload ~/Library/LaunchAgents/com.nightingale.intro-{side}-{today}-{slug}.plist; rm ~/Library/LaunchAgents/com.nightingale.intro-{side}-{today}-{slug}.plist"`. Then `launchctl load ~/Library/LaunchAgents/com.nightingale.intro-{side}-{today}-{slug}.plist`.
-   - **Linux**: `echo "{repo_root}/scripts/run-one-apify-call.sh --side {side} --target-url {url} --target-meta-path {meta_path} --result-path {result_path}" | at -t {YYYYMMDDhhmm}`. Requires `at` to be installed and `atd` running.
+3. Register a per-target Windows Scheduled Task at the computed fire time via the PowerShell tool. Do NOT shell out to `schtasks /sd` — the `/sd` flag is locale-dependent (en-US wants `MM/DD/YYYY`, en-GB wants `DD/MM/YYYY`) and breaks for any non-en-US user. Use `Register-ScheduledTask` with a `[datetime]`-parsed trigger, which is locale-agnostic:
 
-   Detect OS at the start of Step 2f via uname / $env:OS and dispatch to the correct path.
+   ```powershell
+   $fireTime = [datetime]"YYYY-MM-DD HH:MM:SS"
+   $trigger  = New-ScheduledTaskTrigger -Once -At $fireTime
+   $args = "-ExecutionPolicy Bypass -NoProfile -File `"$repoRoot\scripts\run-one-apify-call.ps1`" " +
+           "-Side `"$side`" -TargetUrl `"$url`" -TargetMetaPath `"$metaPath`" -ResultPath `"$resultPath`""
+   $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $args
+   $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+   $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -DeleteExpiredTaskAfter (New-TimeSpan -Hours 2)
+   Register-ScheduledTask `
+       -TaskName "Nightingale-Intro-$side-$today-$slug" `
+       -Trigger $trigger -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+   ```
 
-4. If scheduling the task fails (e.g., `at` not installed on Linux), log per-target failure but continue with the rest of the batch.
+   `-DeleteExpiredTaskAfter` auto-removes the one-shot from the Task Scheduler 2 hours after fire time, so the registry doesn't accumulate hundreds of stale entries over months.
+
+4. If `Register-ScheduledTask` throws for a target (rare; usually means a name collision with a still-pending earlier task), log the per-target failure and continue with the rest of the batch. Do not abort the queue phase.
 
 ### 2g. Write back state
 
@@ -326,7 +340,7 @@ Manual triggers also schedule OS one-shots with random fire times today (8am-8pm
 ## Hard rules
 
 1. **No Apollo.** No `apollo_*` MCP tool may be called from this agent.
-2. **No direct Apify calls from this agent.** All Apify HTTP traffic comes from the per-call worker scripts (`scripts/run-one-apify-call.{ps1|sh}`). This agent only schedules OS tasks that invoke those workers.
+2. **No direct Apify calls from this agent.** All Apify HTTP traffic comes from the per-call worker script (`scripts/run-one-apify-call.ps1`). This agent only schedules Windows Task Scheduler one-shots that invoke that worker.
 3. **No emails.** This agent never reads, writes, scrapes, or pattern-constructs an email address.
 4. **No `li_at` reads from this agent.** Only the per-call worker reads the cookie. This agent only checks file existence at `~/.nightingale/secrets.json`.
 5. **No fabricated mutuals.** A worker returning zero mutuals for a target is a valid (empty) result — surface as "zero mutuals" in the output, never invent.
