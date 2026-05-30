@@ -1,6 +1,6 @@
 # nightingale-gtm
 
-Five signal-first prospect-discovery agents for Nightingale's GTM motion. They run on Windows + Claude Code, hit public clinical-trial / regulatory / funding / academic-research feeds plus your LinkedIn network, your own Gmail history, and your Google Calendar, and drop daily/weekly markdown files on your Desktop.
+Six agents for Nightingale's GTM motion — five signal-first prospect-discovery agents plus one feedback-loop agent that closes the loop with persona-refinement proposals from calls + emails. They run on Windows + Claude Code, hit public clinical-trial / regulatory / funding / academic-research feeds plus your LinkedIn network, your Gmail history, your Google Calendar, and a team-shared Google Drive folder of call transcripts, and drop daily/weekly markdown files on your Desktop.
 
 - **`signal-watcher-commercial`** — biotech / pharma / med-device sponsors, 10–200 employees, US. Sources: ClinicalTrials.gov, SEC EDGAR 8-Ks, openFDA, press wires, LinkedIn job postings, Apollo funding.
 - **`signal-watcher-academic`** — US academic medical centers and research hospitals running human-subjects studies. Sources: ClinicalTrials.gov (academic Lead Sponsor or Facility), NIH RePORTER, SBIR/STTR, university press / news.
@@ -8,6 +8,7 @@ Five signal-first prospect-discovery agents for Nightingale's GTM motion. They r
 - **`intro-finder`** — runs daily Sun–Fri 7am. Spreads the active buying-group file's targets across the week (1/5 per day), invokes Apify per target across a randomized 8am–8pm window, and delivers a per-target + per-mutual warm-intro file each morning.
 - **`gmail-resurfacer`** — runs daily Mon–Fri 7am (parallel to intro-finder, NOT chained). Walks 12 months of Gmail history forward from a cursor, scores every thread against both personas, and surfaces the top 5 contacts to re-engage today with HubSpot state annotation. Fully read-only against Gmail / HubSpot / Apollo. Never quotes email body verbatim.
 - **`daily-brief`** — runs daily Mon–Fri 6am (one hour before the 7am stack so it lands first). Pulls today + tomorrow's Google Calendar, filters to external meetings, and assembles per-meeting prep including persona match, recent thread context, cross-agent context, Layer-A cached intro suggestions (reverse-lookup against intro-finder's `found-mutuals.json`), Layer-B fresh persona-roster intros (Apify with WebSearch fallback), recommended talking points, and HubSpot state. Fully read-only across all sources.
+- **`feedback-analyzer`** — runs on-demand (no Task Scheduler entry; trigger via `RUN feedback-analyzer` or wire up your own weekly cron). Reads call transcripts from the team-shared Google Drive folder `/curanostics/nightingale/call transcripts` AND your inbound Gmail replies (last 7 days), scores them with a weighted confidence model (calls 1.0 / generic email 0.3 / value-prop-quoting or explicit-disqualification email 0.5), and emits a propose-only refinement report with literal before/after diffs against the persona files. Output lands on your Desktop at `~/Desktop/nightingale-signals/feedback-insights/` — never in the repo tree (the report contains verbatim prospect quotes and would otherwise risk being committed to a shared remote).
 
 This repo is **Windows-only** as of 2026-05. macOS and Linux are not supported.
 
@@ -64,9 +65,12 @@ C:\Users\{you}\Desktop\nightingale-signals\
 ├── resurfacer\
 │   ├── state\                                            # cursor + cooldown + snooze + score cache
 │   └── output\resurfacer-YYYY-MM-DD.md                   # daily re-surfacer (Mon–Fri, when Gmail MCP authorized)
-└── daily-brief\
-    ├── state\                                            # attendee-roster cache + brief history + LinkedIn-URL cache
-    └── output\daily-brief-YYYY-MM-DD.md                  # daily brief (Mon–Fri, when Google Calendar MCP authorized)
+├── daily-brief\
+│   ├── state\                                            # attendee-roster cache + brief history + LinkedIn-URL cache
+│   └── output\daily-brief-YYYY-MM-DD.md                  # daily brief (Mon–Fri, when Google Calendar MCP authorized)
+└── feedback-insights\
+    ├── state\                                            # _processed.md + _patterns.md (weighted-source schema)
+    └── output\refinement-YYYY-MM-DD.md                   # propose-only persona-refinement diffs (on-demand)
 ```
 
 The `nightingale-signals\` folder is created automatically on the first run.
@@ -165,7 +169,8 @@ nightingale-gtm/
 │       ├── buying-group-finder-academic.md
 │       ├── intro-finder.md
 │       ├── gmail-resurfacer.md
-│       └── daily-brief.md
+│       ├── daily-brief.md
+│       └── feedback-analyzer.md
 ├── 01-personas/
 │   ├── commercial-persona.md
 │   └── academic-persona.md

@@ -204,6 +204,7 @@ Every scheduled Monday sweep ends with a **Step 11 hand-off** that invokes the c
 | `.claude/agents/gmail-resurfacer.md` | Daily Gmail re-surfacer (Mon-Fri 7am). Walks 12 months of Gmail history forward from a cursor, scores threads against both personas, surfaces top 5 contacts to re-engage today with HubSpot state annotation. Read-only against Gmail/HubSpot/Apollo. No verbatim email body in output. |
 | `.claude/agents/daily-brief.md` | Daily morning calendar brief (Mon-Fri 6am, fires before the 7am stack). Pulls today + tomorrow's calendar, filters to external meetings, assembles per-meeting prep with persona match, recent thread context, cross-agent context, Layer-A cached intro suggestions (via intro-finder's found-mutuals.json) and Layer-B fresh persona-roster intros (Apify or WebSearch fallback). Read-only against all sources. |
 | `scripts/run-one-apify-company-roster.ps1` | Layer-B worker for daily-brief. Invoked synchronously per meeting attendee (cap 8/day). Reads optional `apify_company_roster_actor_id` from secrets v3; if absent, the agent falls back to WebSearch without invoking this script. Same conventions as `run-one-apify-call.ps1` (header auth, atomic write, distinct 404 / 429 / cookie-expired statuses). |
+| `.claude/agents/feedback-analyzer.md` | On-demand or weekly feedback-loop agent. Reads call transcripts from `/curanostics/nightingale/call transcripts` (team-shared Drive folder) and the operator's inbound Gmail replies, scores them with a weighted confidence model, and emits a propose-only refinement report with literal before/after diffs against the persona files (and any optional diff-target files present in the local checkout). Outputs land on the operator's Desktop at `~/Desktop/nightingale-signals/feedback-insights/`, never in the repo tree. |
 | `scripts/setup-secrets.ps1` | One-time per-machine setup. Prompts for Apify API token + Actor ID + your LinkedIn profile URL + `li_at` cookie. Validates all four against Apify in one round-trip. Writes `~/.nightingale/secrets.json` with restricted ACL. |
 | `scripts/run-one-apify-call.ps1` | Per-target worker invoked by a Windows Scheduled Task one-shot. Calls Apify Actor once via header auth, polls, writes result JSON atomically. Handles 404 / 429 / cookie-expiry as distinct statuses. |
 | `scripts/install-schedule.ps1` | Registers the three Windows Task Scheduler entries (Mon-only sweeps + Sun-Fri intro-finder). |
@@ -519,3 +520,102 @@ Same paraphrase-only rule as the re-surfacer: **the brief markdown NEVER quotes 
 - No outreach generation. The brief informs the operator's manual outreach; it doesn't pre-write it.
 - No weekend runs. Mon-Fri only.
 - No support for non-Google calendars in v1 (Outlook / Apple / ICS feeds deferred).
+
+---
+
+## Feedback Analyzer — on-demand or weekly
+
+The `feedback-analyzer` agent is the sixth stage of the chain. Unlike the other five it does NOT register a Task Scheduler entry — it runs on-demand via trigger phrase (operators can wire it to their own weekly cron if desired). Its job is to close the loop: take what's actually happening in calls and email replies and propose evidence-backed updates to the persona files (and any other diff-target files present in the checkout).
+
+### Why it exists
+
+The other five agents PRODUCE prospect activity (signal-watcher / buying-group-finder / intro-finder / gmail-resurfacer / daily-brief). None of them learns from the OUTCOME of that activity. A call where a prospect says "actually our reconciliation pain is 3 weeks, not 4-6" is high-value persona-correcting signal that no other agent captures. Same for an email reply that quotes back a value-prop and asks a sharper question, or one that says "wrong contact — talk to our CMO instead."
+
+The feedback-analyzer reads two feedback sources:
+1. **Granola call transcripts** from the team-shared Google Drive folder `/curanostics/nightingale/call transcripts`.
+2. **Inbound Gmail replies** from the operator's own inbox (the last 7 days by default, in threads the operator participated in).
+
+It extracts insights along the same dimensions for both, scores them with a weighted confidence model, and emits a propose-only refinement report.
+
+### Weighted confidence model
+
+Calls are deeper signal than emails. The thresholds use weighted occurrence sums, not raw counts:
+
+| Source type | Weight per occurrence |
+|---|---|
+| Call | 1.0 |
+| Email — value-prop quote-back (reply quotes a value-prop we sent) | 0.5 |
+| Email — explicit disqualification ("not interested" / "wrong contact") | 0.5 |
+| Email — role-reality conflict (reply signature contradicts the role we cold-emailed) | 0.5 |
+| Email — generic | 0.3 |
+
+Weights per email do NOT stack — apply the first matching category in priority order (VP quote-back > disqualification > role conflict > generic). Maximum email weight = 0.5.
+
+Confidence tiers from weighted sum:
+- **High** ≥ 3.0 (e.g. 3 calls; or 10 generic emails; or 1 call + 7 emails)
+- **Medium** ≥ 2.0
+- **Low** ≥ 1.0 — flagged in report, no before/after diff (single-source signal, judge manually)
+- **Sub-threshold** < 1.0 — logged in `_patterns.md` only, not surfaced as a finding
+
+A single email reply (0.3) is sub-threshold and never alone produces a persona-edit proposal. This is the intentional guard against email-driven persona churn.
+
+### Diff targets (adaptive per checkout)
+
+Always emitted (both repos have these files):
+- `01-personas/commercial-persona.md`
+- `01-personas/academic-persona.md`
+
+Conditionally emitted (only if present in the local checkout — the GTM repo does not ship these, so they're typically absent here):
+- `.claude/agents/prospecter.md`
+- `02-sales/02b-campaigns/outreach-tier1-day1.md`
+- `02-sales/02a-prospect lists/trial-qualification.md`
+
+Findings that would target a missing file are surfaced under "Findings without an applicable diff target" so they're visible for manual review even if no automated diff is produced.
+
+### Output paths
+
+```
+~/Desktop/nightingale-signals/feedback-insights/
+├── state/
+│   ├── _processed.md       # log of analyzed sources, with source column (call|email)
+│   └── _patterns.md        # cumulative weighted pattern log
+└── output/
+    └── refinement-{date}.md  # propose-only report with literal before/after diffs
+```
+
+**Critically, outputs go to the operator's Desktop, NOT into the repo tree.** The refinement report quotes prospects verbatim — that's its core value — but keeping it outside the repo means it cannot be accidentally `git add`ed and pushed to a shared remote. Each operator's reports stay local to their Desktop.
+
+### Prerequisites
+
+At least ONE of these MCP connectors authorized in Claude Code (the agent gracefully degrades if one is missing; if BOTH are missing it writes a single `MCPS_NOT_AUTHORIZED-{date}.md` notice and exits):
+- **Google Drive MCP** — for reading the team-shared call transcripts folder. Without it, Step 2a (call discovery) is skipped.
+- **Gmail MCP** — for reading inbound replies. Without it, Step 2b (email discovery) is skipped.
+
+To analyze the team-shared call transcripts, the operator's Google account also needs share access to `/curanostics/nightingale/call transcripts`.
+
+### Trigger phrases
+
+**Combined-feedback (primary):**
+- `ANALYZE feedback` — full run against unprocessed transcripts + emails.
+- `ANALYZE email replies` — emails-only run.
+- `REFINE persona from feedback` — alias for full run.
+- `RUN feedback-analyzer` — for any operator-scheduled weekly cron.
+- `WEEKLY feedback insights` — alias for full run.
+
+**Call-only aliases (preserved for compatibility with the older call-analyzer cron entries):**
+- `ANALYZE calls`, `ANALYZE last week's calls`, `ANALYZE this week's calls`, `ANALYZE the {company} call`
+- `REFINE persona from calls`, `RUN call-analyzer`, `WEEKLY call insights`
+
+### Privacy rule (different from daily-brief / resurfacer)
+
+Daily-brief and gmail-resurfacer paraphrase email body content because their outputs are operational briefs and could be screenshotted casually. The feedback-analyzer's report DOES contain verbatim prospect quotes — that's its evidentiary value (no quote, no diff). Treat the report on your Desktop as sensitive: do not share externally, do not commit, do not paste quotes into Slack/HubSpot/etc. without redaction.
+
+### What feedback-analyzer does NOT do
+
+- No source-file writes. Strictly propose-only — the operator manually reviews and applies approved diffs.
+- No Gmail mutations (no drafts, no labels, no replies).
+- No Google Drive mutations.
+- No HubSpot / Apollo / Calendar / Instantly writes.
+- No outreach generation.
+- No auto-apply of diffs (operator must explicitly request `apply diffs N,N,N from refinement-{date}` and even then a separate apply pass is required).
+- No Outlook / non-Google mail support in v1.
