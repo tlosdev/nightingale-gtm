@@ -3,27 +3,30 @@
     Registers Windows Task Scheduler entries that drive the Nightingale agent chain.
 
 .DESCRIPTION
-    One-time setup. Run this once after cloning the nightingale repo. Four scheduled
+    One-time setup. Run this once after cloning the nightingale repo. Five scheduled
     tasks are registered:
-      - Nightingale-Commercial-Sweep         (Monday 7:00 local — sweep + buying-group-finder)
-      - Nightingale-Academic-Sweep           (Monday 7:00 local — sweep + buying-group-finder)
-      - Nightingale-Intro-Finder-Morning     (Sun-Fri 7:00 local — delivery + queue)
-      - Nightingale-Gmail-Resurfacer-Morning (Mon-Fri 7:00 local — Gmail re-surfacer)
+      - Nightingale-Daily-Brief-Morning        (Mon-Fri 6:00 local — calendar brief, runs before the 7am stack)
+      - Nightingale-Commercial-Sweep           (Monday 7:00 local — sweep + buying-group-finder)
+      - Nightingale-Academic-Sweep             (Monday 7:00 local — sweep + buying-group-finder)
+      - Nightingale-Intro-Finder-Morning       (Sun-Fri 7:00 local — delivery + queue)
+      - Nightingale-Gmail-Resurfacer-Morning   (Mon-Fri 7:00 local — Gmail re-surfacer)
 
     Each task invokes the `claude` CLI headlessly from the cloned repo directory
     with the appropriate trigger phrase.
 
 .PREREQUISITES
     - Claude Code installed and on PATH (the `claude` command must be runnable from a fresh shell)
-    - The ClinicalTrials.gov MCP connector authorized (both sweeps + resurfacer)
-    - The Apollo.io MCP connector authorized (commercial sweep + resurfacer read-only)
-    - The Gmail MCP connector authorized (resurfacer only)
-    - The HubSpot MCP connector authorized (resurfacer read-only annotation)
+    - The ClinicalTrials.gov MCP connector authorized (both sweeps + resurfacer + daily-brief)
+    - The Apollo.io MCP connector authorized (commercial sweep + resurfacer + daily-brief read-only)
+    - The Gmail MCP connector authorized (resurfacer + daily-brief)
+    - The Google Calendar MCP connector authorized (daily-brief only)
+    - The HubSpot MCP connector authorized (resurfacer + daily-brief read-only annotation)
     - For intro-finder: ~/.nightingale/secrets.json populated via scripts/setup-secrets.ps1
+    - For daily-brief Layer-B (optional): the same secrets file with apify_company_roster_actor_id set
     - Internet access from this machine during scheduled times
 
 .NOTES
-    To uninstall:  Unregister-ScheduledTask -TaskName 'Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning' -Confirm:$false
+    To uninstall:  Unregister-ScheduledTask -TaskName 'Nightingale-Daily-Brief-Morning','Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning' -Confirm:$false
     To list:       Get-ScheduledTask -TaskName 'Nightingale-*'
     Windows Task Scheduler runs on LOCAL time, not Eastern.
 #>
@@ -55,6 +58,22 @@ Write-Host "claude CLI: $($claudeCmd.Source)"
 # Common principal + settings
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd -RunOnlyIfNetworkAvailable
+
+# --- Daily-brief morning (Mon-Fri 6am, fires before the 7am stack) ---
+$dailyBriefTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At "6:00am"
+$dailyBriefAction = New-ScheduledTaskAction `
+    -Execute $claudeCmd.Source `
+    -Argument '-p "daily brief morning"' `
+    -WorkingDirectory $repoRoot
+Register-ScheduledTask `
+    -TaskName 'Nightingale-Daily-Brief-Morning' `
+    -Action $dailyBriefAction `
+    -Trigger $dailyBriefTrigger `
+    -Principal $principal `
+    -Settings $settings `
+    -Description 'Nightingale daily-brief: today + tomorrow calendar prep (Mon-Fri 6am local, runs one hour before the 7am agent stack so the brief lands first).' `
+    -Force | Out-Null
+Write-Host "Registered: Nightingale-Daily-Brief-Morning"
 
 # --- Monday-only sweep triggers ---
 $mondayTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At "7:00am"
@@ -123,10 +142,11 @@ Write-Host "Registered: Nightingale-Gmail-Resurfacer-Morning"
 
 Write-Host ""
 Write-Host "Done. Verify with:  Get-ScheduledTask -TaskName 'Nightingale-*'"
+Write-Host "Next daily-brief run:  next upcoming Mon-Fri at 6:00 AM local time."
 Write-Host "Next sweep run:        next upcoming Monday at 7:00 AM local time."
 Write-Host "Next intro-finder run: next upcoming Sun-Fri at 7:00 AM local time."
 Write-Host "Next resurfacer run:   next upcoming Mon-Fri at 7:00 AM local time."
-Write-Host "Outputs land in: $HOME\Desktop\nightingale-signals\{commercial|academic|resurfacer}\..."
+Write-Host "Outputs land in: $HOME\Desktop\nightingale-signals\{commercial|academic|resurfacer|daily-brief}\..."
 Write-Host ""
 Write-Host "If you have not yet run scripts/setup-secrets.ps1, intro-finder will skip the"
 Write-Host "Apify lookup step and write a SECRETS_MISSING-<date>.md notice. Run it before"
@@ -134,3 +154,9 @@ Write-Host "the next Sunday-Thursday 7am if you want intros to fire."
 Write-Host ""
 Write-Host "If the Gmail MCP connector is not authorized in Claude Code, the resurfacer"
 Write-Host "will skip cleanly and write a GMAIL_NOT_AUTHORIZED-<date>.md notice instead."
+Write-Host ""
+Write-Host "If the Google Calendar MCP connector is not authorized in Claude Code, the"
+Write-Host "daily-brief will skip cleanly and write a CALENDAR_NOT_AUTHORIZED-<date>.md notice."
+Write-Host "Daily-brief Layer-B persona-roster lookup uses the optional"
+Write-Host "apify_company_roster_actor_id from secrets.json; without it, Layer-B falls back"
+Write-Host "to WebSearch (free, lower coverage). Add the Actor via scripts/setup-secrets.ps1."

@@ -202,6 +202,8 @@ Every scheduled Monday sweep ends with a **Step 11 hand-off** that invokes the c
 | `.claude/agents/buying-group-finder-academic.md` | Academic contact discovery + email scraping (auto-chained after the academic sweep) |
 | `.claude/agents/intro-finder.md` | Daily warm-intro discovery (Sun-Fri 7am). Consumes the active buying-group file, calls Apify per target via OS-scheduled one-shots, delivers each prior day's intros each morning. |
 | `.claude/agents/gmail-resurfacer.md` | Daily Gmail re-surfacer (Mon-Fri 7am). Walks 12 months of Gmail history forward from a cursor, scores threads against both personas, surfaces top 5 contacts to re-engage today with HubSpot state annotation. Read-only against Gmail/HubSpot/Apollo. No verbatim email body in output. |
+| `.claude/agents/daily-brief.md` | Daily morning calendar brief (Mon-Fri 6am, fires before the 7am stack). Pulls today + tomorrow's calendar, filters to external meetings, assembles per-meeting prep with persona match, recent thread context, cross-agent context, Layer-A cached intro suggestions (via intro-finder's found-mutuals.json) and Layer-B fresh persona-roster intros (Apify or WebSearch fallback). Read-only against all sources. |
+| `scripts/run-one-apify-company-roster.ps1` | Layer-B worker for daily-brief. Invoked synchronously per meeting attendee (cap 8/day). Reads optional `apify_company_roster_actor_id` from secrets v3; if absent, the agent falls back to WebSearch without invoking this script. Same conventions as `run-one-apify-call.ps1` (header auth, atomic write, distinct 404 / 429 / cookie-expired statuses). |
 | `scripts/setup-secrets.ps1` | One-time per-machine setup. Prompts for Apify API token + Actor ID + your LinkedIn profile URL + `li_at` cookie. Validates all four against Apify in one round-trip. Writes `~/.nightingale/secrets.json` with restricted ACL. |
 | `scripts/run-one-apify-call.ps1` | Per-target worker invoked by a Windows Scheduled Task one-shot. Calls Apify Actor once via header auth, polls, writes result JSON atomically. Handles 404 / 429 / cookie-expiry as distinct statuses. |
 | `scripts/install-schedule.ps1` | Registers the three Windows Task Scheduler entries (Mon-only sweeps + Sun-Fri intro-finder). |
@@ -418,3 +420,102 @@ Optional but recommended connectors (graceful degradation if missing):
 - No verbatim email body in the output md. Paraphrase only.
 - No weekend runs. Mon-Fri only — matches a standard working week.
 - No ML / embedding clustering. Heuristic + LLM-judgment scoring only.
+
+---
+
+## Daily Brief — daily Mon-Fri 6am
+
+The `daily-brief` agent is the fifth stage of the chain. It runs Mon-Fri at **6am local — deliberately one hour before the 7am stack** (signal-watcher / intro-finder / gmail-resurfacer) so the brief lands first and is not buried under the 7am push notifications.
+
+### Why it exists
+
+The other four agents PRODUCE data — qualified companies, buying groups, intro paths, re-surfaced contacts. The daily-brief AGGREGATES that data into per-meeting action. For each external meeting on today + tomorrow's calendar, the brief assembles meeting essentials, attendee identity, persona match, recent thread context (paraphrased), cross-agent context (signal-watcher / buying-group / ClinicalTrials.gov / re-surfacer status for the attendee's company), Layer-A cached intro suggestions, Layer-B fresh persona-roster intros, recommended persona-aligned talking points, and HubSpot state annotation.
+
+The agent does not produce new prospect data. It is read-and-synthesize.
+
+### Operational rhythm
+
+```
+Mon-Fri 6am: enumerate today + tomorrow calendar → filter external → per-meeting prep → write md → push.
+Sat/Sun:     no run.
+```
+
+### What counts as an "external meeting"
+
+The brief filters out:
+- Events with no attendees or only self (focus blocks, OOO markers).
+- Events where every non-self attendee email ends in `@Nightingalesolution.com` (internal-only).
+- Events whose title matches a recurring-internal pattern: `standup`, `sync`, `1:1`, `office hours`, `team meeting`, `all-hands`, `lunch`, `focus time`, `blocked`, `OOO`, `out of office`, `bday`, `birthday`.
+
+Volume cap: **8 external meetings/day**. If the day has more, the first 8 by start time get full prep and the rest land in the "Skipped — volume cap" section so they're visible to the operator.
+
+### Intro suggestions in two layers
+
+**Layer A — cached (free, instant)**: reverse-scan intro-finder's `found-mutuals.json` per side. If the meeting attendee appears as a *mutual* against any prior target, emit "Ask {attendee} to intro you to **{target}** ({role} at {company}; strength: {strong/medium/weak})." Strict match preferred (`mutual.url == attendee.linkedin_url`); fuzzy fallback marked `⚠ fuzzy — verify before asking`.
+
+**Layer B — fresh persona-roster (Apify or WebSearch, today's meetings only)**: for each external attendee with a resolved company, surface persona-matching colleagues at THAT company the attendee could introduce.
+
+- **Preferred path** (when `apify_company_roster_actor_id` is set in secrets v3): invoke `scripts/run-one-apify-company-roster.ps1` synchronously (90s timeout) — Apify LinkedIn-company-employees Actor returns the roster, the worker filters client-side to persona-matching titles, agent surfaces top 5.
+- **Fallback path** (when the Layer-B Actor is not configured OR Apify times out OR returns non-success): the agent issues WebSearch queries `site:linkedin.com/in "{title-role-token}" "{Company}"` per persona bucket and surfaces top 3 per bucket. Each row tagged `(source: WebSearch — Apify Layer-B not configured)`.
+
+**Caps**: 8 Layer-B lookups/day across all meetings; 3 attendees per meeting maximum. Per-company results are cached for 30 days to avoid re-querying the same company across multiple meetings.
+
+### Recommended talking points
+
+For each meeting, the brief generates 3 bullets per matched persona bucket, sourced from the persona file's "Messaging Principles" and the matched role's "ROI & Justification Framework" sub-section. Each bullet references the source persona section by name so the operator can deep-read if needed. NOT a generated pitch — guidance only.
+
+### Output paths
+
+```
+~/Desktop/nightingale-signals/daily-brief/
+├── state/
+│   ├── attendee-roster-cache.json    # per-company Layer-B results, 30-day TTL
+│   ├── brief-history.json             # every brief delivered (date, meetings, attendees)
+│   └── linkedin-url-cache.json        # email → LinkedIn URL resolution cache
+└── output/
+    └── daily-brief-{date}.md          # delivered each weekday 6am
+```
+
+### Cron entry
+
+After running `scripts/install-schedule.ps1`, you should see five Nightingale entries:
+
+```
+Nightingale-Daily-Brief-Morning          Mon–Fri 6am
+Nightingale-Commercial-Sweep             Monday 7am
+Nightingale-Academic-Sweep               Monday 7am
+Nightingale-Intro-Finder-Morning         Sun–Fri 7am
+Nightingale-Gmail-Resurfacer-Morning     Mon–Fri 7am
+```
+
+### Prerequisites
+
+The daily-brief requires the **Google Calendar MCP connector** authorized in Claude Code (Settings → Connectors → Google Calendar). If unauthorized at run time, the agent writes a `CALENDAR_NOT_AUTHORIZED-{date}.md` notice + push and exits cleanly. The other four agents are unaffected.
+
+Optional but recommended connectors (graceful degradation):
+- **Gmail MCP** — for attendee identity resolution (signature scrape) and recent thread context. Without it, the brief degrades to HubSpot + WebSearch identity resolution and shows "No prior email history" for every attendee.
+- **HubSpot MCP** — for state annotation. Without it, every attendee shows `HubSpot: not present`.
+- **Apollo MCP** — read-only enrichment when signature/HubSpot doesn't supply company industry / employee count.
+- **ClinicalTrials.gov MCP** — for the cross-agent "trial-design window open" check on the attendee's company.
+- **Apify Layer-B Actor** (optional secret in `~/.nightingale/secrets.json` schema v3 as `apify_company_roster_actor_id`): the daily-brief Layer-B persona-roster Apify path. Without it, Layer-B uses the WebSearch fallback.
+
+### Trigger phrases
+
+- `daily brief morning` — full daily run (what cron invokes; fires push).
+- `RUN daily brief` / `brief me on today` — manual run, no push.
+- `brief me on {ISO date}` — force-run for a specific date.
+- `daily brief dry run` — assemble brief but do NOT advance state or fire push.
+
+### Privacy rule
+
+Same paraphrase-only rule as the re-surfacer: **the brief markdown NEVER quotes email body content verbatim.** All thread-context summaries are paraphrased in ≤ 1 sentence per email. Verbatim quoting indicates a prompt-failure and must be corrected.
+
+### What daily-brief does NOT do (v1)
+
+- No calendar mutations. No event creation, no RSVP changes, no calendar writes.
+- No Gmail mutations. No drafts, no replies.
+- No HubSpot writes.
+- No Apollo writes.
+- No outreach generation. The brief informs the operator's manual outreach; it doesn't pre-write it.
+- No weekend runs. Mon-Fri only.
+- No support for non-Google calendars in v1 (Outlook / Apple / ICS feeds deferred).

@@ -1,12 +1,17 @@
 <#
 .SYNOPSIS
-    Captures the user's Apify API token, Apify Actor ID, LinkedIn profile URL (for
-    validation), and LinkedIn li_at cookie. Validates all of them against Apify in
-    one round-trip, then writes ~/.nightingale/secrets.json with a restricted ACL.
+    Captures the user's Apify API token, Apify Actor ID (mutual-connections),
+    LinkedIn profile URL (for validation), LinkedIn li_at cookie, and an
+    OPTIONAL second Apify Actor ID for LinkedIn-company-employees scraping
+    (powers the daily-brief Layer-B persona-roster lookup). Validates all
+    REQUIRED fields against Apify in one round-trip, then writes
+    ~/.nightingale/secrets.json (schema v3) with a restricted ACL.
 
 .DESCRIPTION
-    One-time per-user setup for the intro-finder agent. Re-run to rotate any
-    individual secret; existing values are preserved unless you choose to overwrite.
+    One-time per-user setup for the intro-finder + daily-brief agents. Re-run
+    to rotate any individual secret; existing values are preserved unless you
+    choose to overwrite. The company-roster Actor ID is OPTIONAL — leave blank
+    to use the daily-brief WebSearch fallback path.
 
     Validation flow:
       1. Apify API token  -> GET /v2/users/me (header auth).
@@ -14,6 +19,9 @@
       3. LinkedIn li_at   -> one Actor run against YOUR own LinkedIn profile URL.
                              Costs ~$0.01-0.05 in Apify credit. Worth it: cookie
                              validation catches bad creds at setup, not Monday morning.
+      4. Company-roster Actor (OPTIONAL) -> not validated at setup time to
+                             avoid additional Apify spend; failures surface on
+                             first daily-brief Layer-B call with actionable status.
 
 .NOTES
     Secrets file lives outside the repo: $env:USERPROFILE\.nightingale\secrets.json
@@ -66,6 +74,9 @@ if (Test-Path $secretsPath) {
         if ($existing.schema_version -lt 2) {
             Write-Host "Schema v1 -> v2 upgrade: prompting for missing fields (apify_actor_id, apify_validation_url)."
         }
+        if ($existing.schema_version -lt 3) {
+            Write-Host "Schema v2 -> v3 upgrade: optional prompt for apify_company_roster_actor_id (powers daily-brief Layer-B)."
+        }
     } catch {
         Write-Warning "Existing secrets file is unreadable ($($_.Exception.Message)); will overwrite."
         $existing = $null
@@ -90,6 +101,7 @@ $promptApify        = $true
 $promptActor        = $true
 $promptValidationUrl = $true
 $promptLiAt         = $true
+$promptRosterActor  = $true
 
 if ($existing) {
     if ($existing.apify_api_token) {
@@ -111,6 +123,12 @@ if ($existing) {
     if ($existing.linkedin_li_at) {
         $resp = Read-Host "Overwrite existing linkedin_li_at? [y/N]"
         $promptLiAt = ($resp -match '^[Yy]')
+    }
+    if ($existing.apify_company_roster_actor_id) {
+        $resp = Read-Host "Overwrite existing apify_company_roster_actor_id (daily-brief Layer-B)? [y/N]"
+        $promptRosterActor = ($resp -match '^[Yy]')
+    } else {
+        Write-Host "No apify_company_roster_actor_id on file (v2 secrets); will offer optional prompt."
     }
 }
 
@@ -177,6 +195,33 @@ if ($promptLiAt) {
     if ([string]::IsNullOrWhiteSpace($liAt)) {
         Write-Error 'Empty li_at value. Aborting.'
         exit 1
+    }
+}
+
+# --- Prompt: Company-roster Actor ID (OPTIONAL — daily-brief Layer-B) --------
+$rosterActorId = if ($existing) { $existing.apify_company_roster_actor_id } else { $null }
+if ($promptRosterActor) {
+    Write-Host ''
+    Write-Host 'OPTIONAL — Apify Actor ID for LinkedIn-company-employees scraping'
+    Write-Host '---'
+    Write-Host 'Powers the daily-brief agent Layer-B persona-roster lookup, which'
+    Write-Host 'surfaces persona-matching colleagues at each meeting attendee''s'
+    Write-Host 'company that the attendee could introduce you to.'
+    Write-Host ''
+    Write-Host 'Browse the Apify store: https://apify.com/store?search=linkedin+company+employees'
+    Write-Host 'Pick a maintained LinkedIn-company-employees Actor and paste its identifier.'
+    Write-Host 'Format: "{username}~{actor-name}".'
+    Write-Host ''
+    Write-Host 'Leave blank to use the WebSearch fallback path (cheaper, lower coverage).'
+    Write-Host ''
+    $rosterInput = (Read-Host 'Apify Company-Roster Actor ID (or press Enter to skip)').Trim()
+    if ([string]::IsNullOrWhiteSpace($rosterInput)) {
+        $rosterActorId = $null
+        Write-Host 'Skipped. Daily-brief Layer-B will use WebSearch fallback.'
+    } else {
+        $rosterActorId = $rosterInput
+        Write-Host 'Company-roster Actor ID recorded. Not validated at setup time to avoid'
+        Write-Host 'extra Apify spend; first daily-brief Layer-B call will surface any issue.'
     }
 }
 
@@ -282,18 +327,24 @@ if ($flagged) {
 }
 Write-Host 'Cookie + Actor validation OK.'
 
-# --- Write secrets.json (schema v2) -----------------------------------------
+# --- Write secrets.json (schema v3) -----------------------------------------
 $createdAt = if ($existing -and $existing.created_at) { $existing.created_at } else { (Get-Date -Format 'yyyy-MM-dd') }
 $updatedAt = (Get-Date -Format 'yyyy-MM-dd')
 
 $secrets = [ordered]@{
-    schema_version       = 2
+    schema_version       = 3
     created_at           = $createdAt
     updated_at           = $updatedAt
     apify_api_token      = $apifyToken
     apify_actor_id       = $actorId
     apify_validation_url = $validationUrl
     linkedin_li_at       = $liAt
+}
+# Only include the company-roster Actor ID when the operator provided one.
+# Omitting (rather than writing an empty string) keeps the daily-brief agent's
+# layer_b_actor_configured probe correct and avoids ambiguous empty-vs-missing.
+if (-not [string]::IsNullOrWhiteSpace($rosterActorId)) {
+    $secrets['apify_company_roster_actor_id'] = $rosterActorId
 }
 
 $json = $secrets | ConvertTo-Json -Depth 5
@@ -323,5 +374,10 @@ if (Test-Path $sentinel) {
 }
 
 Write-Host ''
-Write-Host "Done. Secrets written to: $secretsPath"
+Write-Host "Done. Secrets written to: $secretsPath  (schema v3)"
 Write-Host 'Next intro-finder run (Sun-Thu 7am) will use these credentials.'
+if (-not [string]::IsNullOrWhiteSpace($rosterActorId)) {
+    Write-Host 'Daily-brief Layer-B will use the configured company-roster Actor.'
+} else {
+    Write-Host 'Daily-brief Layer-B will use the WebSearch fallback path.'
+}

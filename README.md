@@ -1,12 +1,13 @@
 # nightingale-gtm
 
-Four signal-first prospect-discovery agents for Nightingale's GTM motion. They run on Windows + Claude Code, hit public clinical-trial / regulatory / funding / academic-research feeds plus your LinkedIn network and your own Gmail history, and drop daily/weekly markdown files on your Desktop.
+Five signal-first prospect-discovery agents for Nightingale's GTM motion. They run on Windows + Claude Code, hit public clinical-trial / regulatory / funding / academic-research feeds plus your LinkedIn network, your own Gmail history, and your Google Calendar, and drop daily/weekly markdown files on your Desktop.
 
 - **`signal-watcher-commercial`** — biotech / pharma / med-device sponsors, 10–200 employees, US. Sources: ClinicalTrials.gov, SEC EDGAR 8-Ks, openFDA, press wires, LinkedIn job postings, Apollo funding.
 - **`signal-watcher-academic`** — US academic medical centers and research hospitals running human-subjects studies. Sources: ClinicalTrials.gov (academic Lead Sponsor or Facility), NIH RePORTER, SBIR/STTR, university press / news.
 - **`buying-group-finder-{commercial,academic}`** — auto-chained after each sweep. Find Economic Buyer / Tech Gatekeeper / Champion (commercial) or PI / Buyer / Tech Gatekeeper (academic) at every surfaced company / institution via WebSearch.
 - **`intro-finder`** — runs daily Sun–Fri 7am. Spreads the active buying-group file's targets across the week (1/5 per day), invokes Apify per target across a randomized 8am–8pm window, and delivers a per-target + per-mutual warm-intro file each morning.
 - **`gmail-resurfacer`** — runs daily Mon–Fri 7am (parallel to intro-finder, NOT chained). Walks 12 months of Gmail history forward from a cursor, scores every thread against both personas, and surfaces the top 5 contacts to re-engage today with HubSpot state annotation. Fully read-only against Gmail / HubSpot / Apollo. Never quotes email body verbatim.
+- **`daily-brief`** — runs daily Mon–Fri 6am (one hour before the 7am stack so it lands first). Pulls today + tomorrow's Google Calendar, filters to external meetings, and assembles per-meeting prep including persona match, recent thread context, cross-agent context, Layer-A cached intro suggestions (reverse-lookup against intro-finder's `found-mutuals.json`), Layer-B fresh persona-roster intros (Apify with WebSearch fallback), recommended talking points, and HubSpot state. Fully read-only across all sources.
 
 This repo is **Windows-only** as of 2026-05. macOS and Linux are not supported.
 
@@ -43,6 +44,7 @@ That's it. Step 2 registers three Windows Task Scheduler entries. Step 3 is **op
 
 | Task | Cadence | What it does |
 |---|---|---|
+| `Nightingale-Daily-Brief-Morning`        | Mon–Fri 6am local        | Daily brief: today + tomorrow calendar prep with per-meeting persona match, cross-agent context, and intro suggestions |
 | `Nightingale-Commercial-Sweep`           | Monday 7am local         | Commercial sweep + buying-group discovery |
 | `Nightingale-Academic-Sweep`             | Monday 7am local         | Academic sweep + buying-group discovery |
 | `Nightingale-Intro-Finder-Morning`       | Sun–Fri 7am local        | Intro-finder: delivery (Mon–Fri) + queue (Sun–Thu) |
@@ -59,21 +61,25 @@ C:\Users\{you}\Desktop\nightingale-signals\
 │   ├── buying-groups\output\buying-group-YYYY-MM-DD.md  # weekly buying group
 │   └── intros\output\intros-YYYY-MM-DD.md               # daily intros (when set up)
 ├── academic\   (same shape)
-└── resurfacer\
-    ├── state\                                            # cursor + cooldown + snooze + score cache
-    └── output\resurfacer-YYYY-MM-DD.md                   # daily re-surfacer (Mon–Fri, when Gmail MCP authorized)
+├── resurfacer\
+│   ├── state\                                            # cursor + cooldown + snooze + score cache
+│   └── output\resurfacer-YYYY-MM-DD.md                   # daily re-surfacer (Mon–Fri, when Gmail MCP authorized)
+└── daily-brief\
+    ├── state\                                            # attendee-roster cache + brief history + LinkedIn-URL cache
+    └── output\daily-brief-YYYY-MM-DD.md                  # daily brief (Mon–Fri, when Google Calendar MCP authorized)
 ```
 
 The `nightingale-signals\` folder is created automatically on the first run.
 
 ---
 
-## Intro-finder + Gmail Re-Surfacer are opt-in
+## Intro-finder + Gmail Re-Surfacer + Daily Brief are opt-in
 
-Two of the four agents need external authorization:
+Three of the five agents need external authorization:
 
 - `intro-finder` needs Apify + a LinkedIn `li_at` cookie (set up via `scripts/setup-secrets.ps1`).
 - `gmail-resurfacer` needs the Gmail MCP connector authorized in Claude Code (Settings → Connectors → Gmail). Optionally also authorize the HubSpot + Apollo + ClinicalTrials.gov MCP connectors for richer scoring and annotation.
+- `daily-brief` needs the Google Calendar MCP connector authorized in Claude Code (Settings → Connectors → Google Calendar). Optionally: Gmail MCP for attendee identity resolution + recent thread context, HubSpot MCP for state annotation, Apollo MCP for company enrichment, ClinicalTrials.gov MCP for trial-design-window cross-ref, and a second optional Apify Actor (`apify_company_roster_actor_id`, set via `scripts/setup-secrets.ps1` schema v3) for richer Layer-B persona-roster intros. Without the Layer-B Actor, daily-brief falls back to WebSearch automatically.
 
 Without those:
 
@@ -81,6 +87,7 @@ Without those:
 - `buying-group-finder-{commercial,academic}` ✓ runs every Monday (auto-chained from sweep)
 - `intro-finder` ⚠ runs but writes `SECRETS_MISSING-{date}.md` notices instead of intros
 - `gmail-resurfacer` ⚠ runs but writes `GMAIL_NOT_AUTHORIZED-{date}.md` notices instead of contact lists
+- `daily-brief` ⚠ runs but writes `CALENDAR_NOT_AUTHORIZED-{date}.md` notices instead of meeting prep
 
 To enable intros, run `setup-secrets.ps1`. It prompts for four things in one flow:
 
@@ -115,7 +122,7 @@ Implications:
 To uninstall everything:
 
 ```powershell
-Unregister-ScheduledTask -TaskName 'Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning' -Confirm:$false
+Unregister-ScheduledTask -TaskName 'Nightingale-Daily-Brief-Morning','Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning' -Confirm:$false
 ```
 
 To delete credentials:
@@ -157,16 +164,18 @@ nightingale-gtm/
 │       ├── buying-group-finder-commercial.md
 │       ├── buying-group-finder-academic.md
 │       ├── intro-finder.md
-│       └── gmail-resurfacer.md
+│       ├── gmail-resurfacer.md
+│       └── daily-brief.md
 ├── 01-personas/
 │   ├── commercial-persona.md
 │   └── academic-persona.md
 ├── 06-agent-documentation/
 │   └── signal-watcher-setup.md                          # detailed setup + troubleshooting
 └── scripts/
-    ├── install-schedule.ps1                             # registers 4 Task Scheduler entries
-    ├── setup-secrets.ps1                                # captures Apify + LinkedIn credentials
-    └── run-one-apify-call.ps1                           # per-target worker (called by intro-finder one-shots)
+    ├── install-schedule.ps1                             # registers 5 Task Scheduler entries
+    ├── setup-secrets.ps1                                # captures Apify + LinkedIn credentials (schema v3)
+    ├── run-one-apify-call.ps1                           # per-target worker (called by intro-finder one-shots)
+    └── run-one-apify-company-roster.ps1                 # per-attendee Layer-B worker (called by daily-brief, optional)
 ```
 
 ---
