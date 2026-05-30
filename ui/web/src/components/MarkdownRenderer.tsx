@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { marked } from 'marked';
-import DOMPurify from 'isomorphic-dompurify';
+import DOMPurify from 'dompurify';
 
 interface Props {
   markdown: string;
@@ -9,16 +9,22 @@ interface Props {
 
 // Renders agent markdown with strict sanitization. The agents themselves
 // guarantee paraphrased content (no verbatim emails), but defense-in-depth:
-// dompurify strips any script/iframe/object that could appear if an agent
-// ever drifts. marked is configured GFM-on for tables.
+// DOMPurify strips any script/iframe/object that could appear if an agent
+// ever drifts.
+//
+// marked v14 ships its own types and a string-returning parse() when
+// async:false is explicit. We pin the option here so the cast is sound even
+// if any future option default changes (marked has changed its async default
+// in past minor releases).
 marked.setOptions({
   gfm: true,
   breaks: false,
+  async: false,
 });
 
 export function MarkdownRenderer({ markdown, className }: Props) {
   const html = useMemo(() => {
-    const dirty = marked.parse(markdown ?? '') as string;
+    const dirty = marked.parse(markdown ?? '', { async: false }) as string;
     const clean = DOMPurify.sanitize(dirty, {
       USE_PROFILES: { html: true },
       ALLOWED_TAGS: [
@@ -27,7 +33,12 @@ export function MarkdownRenderer({ markdown, className }: Props) {
         'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul', 'del', 'ins',
       ],
       ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'class', 'colspan', 'rowspan'],
-      ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i,
+      // https:// only. We previously allowed http: and mailto: — http: was
+      // open to mixed-content injection on a localhost UI and mailto: in an
+      // <img src> is nonsensical. Operator-facing markdown rarely needs
+      // either; if a future need for mailto: links arises, add it back with
+      // a per-tag config (DOMPurify doesn't make per-attr regex easy).
+      ALLOWED_URI_REGEXP: /^https:/i,
     });
     return clean;
   }, [markdown]);

@@ -58,13 +58,33 @@ function loadDecidedIds(): Set<string> {
   return decided;
 }
 
+// Single-entry mtime-keyed cache. The Layout component re-fetches pending on
+// every nav, which would otherwise re-read every pending file + the entire
+// approval-history.jsonl per request. Cache key = sum of (pending-dir mtime +
+// history-file mtime). Invalidated automatically when either changes.
+let cache: { key: string; value: UndecidedPendingItem[] } | null = null;
+
+function buildCacheKey(pendingDir: string, historyPath: string): string {
+  let pendingMtime = 0;
+  let historyMtime = 0;
+  try { pendingMtime = fs.statSync(pendingDir).mtimeMs; } catch { /* missing dir → 0 */ }
+  try { historyMtime = fs.statSync(historyPath).mtimeMs; } catch { /* missing → 0 */ }
+  return `${pendingMtime}|${historyMtime}`;
+}
+
 /**
  * Read every non-archived pending/*.json, filter out decided items, and
  * return the flat list. Sorted by run_date desc, then pending_id asc.
  */
 export function loadAllUndecidedPending(): UndecidedPendingItem[] {
   const pendingDir = path.join(PATHS.hubspotManager, 'pending');
-  if (!fs.existsSync(pendingDir)) return [];
+  const historyPath = path.join(PATHS.hubspotManager, 'state', 'approval-history.jsonl');
+  const key = buildCacheKey(pendingDir, historyPath);
+  if (cache && cache.key === key) return cache.value;
+  if (!fs.existsSync(pendingDir)) {
+    cache = { key, value: [] };
+    return cache.value;
+  }
 
   const decided = loadDecidedIds();
   const undecided: UndecidedPendingItem[] = [];
@@ -95,6 +115,7 @@ export function loadAllUndecidedPending(): UndecidedPendingItem[] {
     return a.pending_id.localeCompare(b.pending_id);
   });
 
+  cache = { key, value: undecided };
   return undecided;
 }
 

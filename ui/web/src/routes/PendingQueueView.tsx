@@ -9,10 +9,18 @@ export default function PendingQueueView() {
   const [filter, setFilter] = useState<string>('');
   const [actionResult, setActionResult] = useState<{ phrase: string; ok: boolean; stdout: string; stderr: string } | null>(null);
 
+  // Small settle delay before invalidating: the claude subprocess exits as
+  // soon as the agent finishes writing approval-history.jsonl, but
+  // filesystem buffering means the cache-keying mtime read can race the
+  // write. 500ms is comfortably above filesystem flush latency on Windows
+  // and below operator-perceptible response time.
+  const SETTLE_MS = 500;
+
   const applyMutation = useMutation({
     mutationFn: ({ ids, run_date }: { ids: number[] | 'all'; run_date: string }) => api.pendingApply(ids, run_date),
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
       setActionResult({ phrase: result.phrase, ok: result.ok, stdout: result.stdout, stderr: result.stderr });
+      await new Promise((r) => setTimeout(r, SETTLE_MS));
       qc.invalidateQueries({ queryKey: ['pending'] });
       setSelected(new Set());
     },
@@ -20,8 +28,9 @@ export default function PendingQueueView() {
 
   const rejectMutation = useMutation({
     mutationFn: ({ ids, run_date }: { ids: number[] | 'all'; run_date: string }) => api.pendingReject(ids, run_date),
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
       setActionResult({ phrase: result.phrase, ok: result.ok, stdout: result.stdout, stderr: result.stderr });
+      await new Promise((r) => setTimeout(r, SETTLE_MS));
       qc.invalidateQueries({ queryKey: ['pending'] });
       setSelected(new Set());
     },

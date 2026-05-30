@@ -10,7 +10,14 @@ const NOTICE_FILES: Array<{ connector: string; dir: string; pattern: RegExp }> =
   { connector: 'Gmail', dir: path.join(PATHS.resurfacer, 'output'), pattern: /^GMAIL_NOT_AUTHORIZED-\d{4}-\d{2}-\d{2}\.md$/ },
   { connector: 'Google Calendar', dir: path.join(PATHS.dailyBrief, 'output'), pattern: /^CALENDAR_NOT_AUTHORIZED-\d{4}-\d{2}-\d{2}\.md$/ },
   { connector: 'HubSpot', dir: path.join(PATHS.hubspotManager, 'output'), pattern: /^HUBSPOT_NOT_AUTHORIZED-\d{4}-\d{2}-\d{2}\.md$/ },
-  { connector: 'Drive+Gmail', dir: path.join(PATHS.feedbackInsights, 'output'), pattern: /^MCPS_NOT_AUTHORIZED-\d{4}-\d{2}-\d{2}\.md$/ },
+  { connector: 'Drive + Gmail (feedback-analyzer)', dir: path.join(PATHS.feedbackInsights, 'output'), pattern: /^MCPS_NOT_AUTHORIZED-\d{4}-\d{2}-\d{2}\.md$/ },
+  // The hardening pass added these two notice shapes to hubspot-manager +
+  // feedback-analyzer. Without these patterns the diagnostics view would
+  // show ✓ while the agents are silently broken.
+  { connector: 'Operator identity (hubspot-manager)', dir: path.join(PATHS.hubspotManager, 'output'), pattern: /^OPERATOR_DOMAIN_UNRESOLVED-\d{4}-\d{2}-\d{2}\.md$/ },
+  { connector: 'Operator identity (feedback-analyzer)', dir: path.join(PATHS.feedbackInsights, 'output'), pattern: /^OPERATOR_DOMAIN_UNRESOLVED-\d{4}-\d{2}-\d{2}\.md$/ },
+  { connector: 'Persona files (hubspot-manager)', dir: path.join(PATHS.hubspotManager, 'output'), pattern: /^PERSONA_FILES_MISSING-\d{4}-\d{2}-\d{2}\.md$/ },
+  { connector: 'Persona files (feedback-analyzer)', dir: path.join(PATHS.feedbackInsights, 'output'), pattern: /^PERSONA_FILES_MISSING-\d{4}-\d{2}-\d{2}\.md$/ },
 ];
 
 function mostRecentNotice(dir: string, pattern: RegExp): { path: string; mtime: number } | null {

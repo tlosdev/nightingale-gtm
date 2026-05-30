@@ -13,16 +13,20 @@
       1. Verifies Node.js 18+ is on PATH.
       2. cd into ui/.
       3. If node_modules is missing: runs `npm install` (one-time, ~1 min).
-      4. If web/dist is missing OR older than the newest source file: runs `npm run build`.
-      5. Starts `npm start` (Express on http://localhost:8765 by default).
-      6. Waits for the server to respond to GET /api/health.
-      7. Opens the URL in the default browser.
-
-    Stop the server with Ctrl+C in this terminal. No background daemon, no
-    auto-launch.
+      4. If web/dist is missing OR older than the newest source file (or
+         -Clean is set): runs `npm run build`.
+      5. Starts `npm start` as a tracked child process (PID captured).
+      6. Waits up to 60s for the server to respond to GET /api/health,
+         printing progress every 5s.
+      7. Opens http://127.0.0.1:<port> in the default browser.
+      8. On Ctrl+C OR terminal close OR script exit, kills the child PID.
 
 .PARAMETER Port
     Override the default port (8765). Sets NIGHTINGALE_UI_PORT for the server.
+
+.PARAMETER Clean
+    Delete ui/web/dist/ before building. Useful after a git pull that may have
+    introduced source changes that the mtime-comparison stale-check can miss.
 
 .NOTES
     Requires Windows + PowerShell 5.1+ AND Node.js 18 LTS or newer.
@@ -30,10 +34,18 @@
 
     The Node server binds to 127.0.0.1 only — never accessible from the LAN.
     No firewall prompt.
+
+    Caveat: PowerShell `finally` blocks run on normal exit + most exceptions,
+    but NOT when the terminal window is closed via the X button or via
+    `taskkill /f`. The Register-EngineEvent + CancelKeyPress handlers cover
+    Ctrl+C and clean shell exit; the X-close case leaves a stranded node
+    process. If that happens, kill it manually:
+      Get-Process -Name node | Where-Object { $_.MainWindowTitle -eq '' } | Stop-Process
 #>
 
 param(
-    [int]$Port = 8765
+    [int]$Port = 8765,
+    [switch]$Clean
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,7 +63,6 @@ if (-not $nodeCmd) {
     Write-Error "Install Node.js 18 LTS or newer from https://nodejs.org/ and re-run."
     exit 1
 }
-
 $nodeVersionRaw = (& node --version) 2>$null
 if ($nodeVersionRaw -notmatch '^v(\d+)\.') {
     Write-Error "Could not parse Node.js version: $nodeVersionRaw"
@@ -80,7 +91,43 @@ if (-not (Test-Path $uiDir)) {
     exit 1
 }
 
-# Switch into ui/ for npm operations.
+# Track the launched npm/node PID for cleanup. Set later when we spawn it.
+$script:nodePid = $null
+
+# Register handlers so the node child process gets killed when this script
+# exits — whether by Ctrl+C, normal completion, or any exception. PowerShell
+# doesn't reliably trap window-close, so the script header above documents
+# the manual recovery for that edge case.
+$cleanup = {
+    if ($script:nodePid) {
+        try {
+            $proc = Get-Process -Id $script:nodePid -ErrorAction SilentlyContinue
+            if ($proc) {
+                Stop-Process -Id $script:nodePid -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        $script:nodePid = $null
+    }
+}
+$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action $cleanup
+try {
+    [Console]::TreatControlCAsInput = $false
+    [Console]::CancelKeyPress += {
+        param($s, $e)
+        # Don't let CTRL+C kill the host before our cleanup; the script's
+        # normal flow will see it and exit, then PowerShell.Exiting fires
+        # our cleanup. e.Cancel = $false means "proceed with normal handling".
+        if ($script:nodePid) {
+            try {
+                Stop-Process -Id $script:nodePid -Force -ErrorAction SilentlyContinue
+            } catch { }
+            $script:nodePid = $null
+        }
+    }
+} catch {
+    # [Console] might not be available in all hosts (e.g. ISE). Non-fatal.
+}
+
 Push-Location $uiDir
 try {
     # --- npm install if needed ----------------------------------------------
@@ -90,20 +137,29 @@ try {
         Write-Host "Installing dependencies (one-time, ~30-60s)..." -ForegroundColor Cyan
         & npm install
         if ($LASTEXITCODE -ne 0) {
-            Write-Error "npm install failed (exit $LASTEXITCODE). Aborting."
+            Write-Error "npm install failed (exit $LASTEXITCODE)."
+            Write-Error "Common causes:"
+            Write-Error "  - No internet connection or corporate proxy blocking npm registry"
+            Write-Error "  - Corrupted npm cache (try: cd ui; npm cache clean --force; npm install)"
+            Write-Error "  - Permission issues on node_modules (try: rm -r node_modules; npm install)"
+            Write-Error "See ui/README.md troubleshooting section."
             exit 1
         }
     }
 
-    # --- npm build if dist missing or stale ---------------------------------
+    # --- npm build if dist missing, stale, or -Clean specified --------------
     $distDir = Join-Path $uiDir 'web\dist'
+    if ($Clean -and (Test-Path $distDir)) {
+        Write-Host "Cleaning web/dist/ before build..." -ForegroundColor Cyan
+        Remove-Item -Recurse -Force $distDir
+    }
     $needsBuild = $true
     if (Test-Path $distDir) {
-        # Find the newest source file vs newest dist file.
-        $newestSrc = Get-ChildItem -Path (Join-Path $uiDir 'web\src') -Recurse -File |
+        # Find newest source mtime vs newest dist mtime.
+        $newestSrc = Get-ChildItem -Path (Join-Path $uiDir 'web\src') -Recurse -File -ErrorAction SilentlyContinue |
                      Sort-Object LastWriteTime -Descending |
                      Select-Object -First 1
-        $newestDist = Get-ChildItem -Path $distDir -Recurse -File |
+        $newestDist = Get-ChildItem -Path $distDir -Recurse -File -ErrorAction SilentlyContinue |
                       Sort-Object LastWriteTime -Descending |
                       Select-Object -First 1
         if ($newestSrc -and $newestDist -and $newestDist.LastWriteTime -gt $newestSrc.LastWriteTime) {
@@ -120,28 +176,42 @@ try {
         }
     }
 
-    # --- Start the server in this process -----------------------------------
+    # --- Start the server as a tracked child process ------------------------
     $env:NIGHTINGALE_UI_PORT = $Port.ToString()
-    $url = "http://localhost:$Port"
+    # FORCE_COLOR=0 prevents npm/Express from emitting ANSI codes that the
+    # legacy PS host renders as garbage (modern Windows Terminal handles
+    # them fine, but we can't assume that).
+    $env:FORCE_COLOR = '0'
+
+    # Use 127.0.0.1 literally rather than 'localhost' — on IPv6-only hosts
+    # localhost may resolve to ::1 and miss the server's IPv4 bind.
+    $url = "http://127.0.0.1:$Port"
 
     Write-Host ""
     Write-Host "Starting Nightingale UI on $url ..." -ForegroundColor Cyan
     Write-Host "(Ctrl+C to stop. The server binds to 127.0.0.1 only — not exposed on your LAN.)"
     Write-Host ""
 
-    # Start npm start in the background so we can poll health, then open browser,
-    # then re-attach to the npm process by waiting on it. Use Start-Job-equivalent.
-    $serverJob = Start-Job -ScriptBlock {
-        param($dir, $port)
-        Set-Location $dir
-        $env:NIGHTINGALE_UI_PORT = $port.ToString()
-        & npm start
-    } -ArgumentList $uiDir, $Port
+    # Start `npm start` as a tracked child so we can kill its node descendant
+    # cleanly on exit. Start-Process -PassThru returns a Process object whose
+    # Id we capture. -NoNewWindow keeps stdout in this console so the operator
+    # sees Express's startup log.
+    $proc = Start-Process -FilePath 'npm.cmd' -ArgumentList 'start' `
+                          -WorkingDirectory $uiDir `
+                          -NoNewWindow -PassThru
+    $script:nodePid = $proc.Id
 
-    # Poll /api/health for up to 30s.
+    # --- Poll /api/health for up to 60s -------------------------------------
     $healthy = $false
-    for ($i = 0; $i -lt 30; $i++) {
+    $elapsed = 0
+    $maxWait = 60
+    while ($elapsed -lt $maxWait) {
         Start-Sleep -Seconds 1
+        $elapsed++
+        if (-not (Get-Process -Id $script:nodePid -ErrorAction SilentlyContinue)) {
+            Write-Warning "Server process exited before becoming healthy. Check the output above."
+            exit 1
+        }
         try {
             $resp = Invoke-WebRequest -Uri "$url/api/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
             if ($resp.StatusCode -eq 200) {
@@ -149,31 +219,33 @@ try {
                 break
             }
         } catch {
-            # not ready yet
+            # not ready yet — keep polling
+        }
+        if ($elapsed % 5 -eq 0) {
+            Write-Host "  still waiting... (${elapsed}s)" -ForegroundColor DarkGray
         }
     }
+
     if (-not $healthy) {
-        Write-Warning "Server did not become healthy within 30s. Check job output:"
-        Receive-Job -Job $serverJob -Keep
-        Write-Warning "Continuing anyway; browser will open but may show a connection error."
+        Write-Warning "Server did not become healthy within ${maxWait}s."
+        Write-Warning "The process is still running (PID $script:nodePid). Browser will open but may show a connection error."
     } else {
         Write-Host "Server healthy." -ForegroundColor Green
         Start-Process $url
     }
 
-    # Stream server output until Ctrl+C or job exit.
-    try {
-        while ($serverJob.State -eq 'Running') {
-            Receive-Job -Job $serverJob
-            Start-Sleep -Seconds 1
-        }
-        Receive-Job -Job $serverJob
-    } finally {
-        Write-Host ""
-        Write-Host "Stopping server..." -ForegroundColor Yellow
-        Stop-Job -Job $serverJob -ErrorAction SilentlyContinue
-        Remove-Job -Job $serverJob -Force -ErrorAction SilentlyContinue
+    # --- Wait for the child to exit (or Ctrl+C) -----------------------------
+    Write-Host ""
+    Write-Host "Server running. Ctrl+C in this terminal to stop." -ForegroundColor Green
+    # Tight loop on process liveness. Cheaper than Wait-Process which blocks
+    # signal handling on some PowerShell hosts.
+    while (Get-Process -Id $script:nodePid -ErrorAction SilentlyContinue) {
+        Start-Sleep -Seconds 1
     }
+    Write-Host ""
+    Write-Host "Server exited." -ForegroundColor Yellow
 } finally {
     Pop-Location
+    & $cleanup
+    Unregister-Event -SourceIdentifier PowerShell.Exiting -ErrorAction SilentlyContinue
 }

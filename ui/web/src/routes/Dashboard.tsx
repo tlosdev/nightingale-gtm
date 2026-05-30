@@ -4,7 +4,14 @@ import { api } from '../lib/api';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
 
 export default function Dashboard() {
-  const health = useQuery({ queryKey: ['health'], queryFn: api.health });
+  // /api/health is near-static (just verifies signals dir presence). Cache it
+  // long so tab-switching doesn't spam the disk for nothing.
+  const health = useQuery({
+    queryKey: ['health'],
+    queryFn: api.health,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
   const pending = useQuery({ queryKey: ['pending'], queryFn: api.pending });
   const brief = useQuery({ queryKey: ['brief', 'today'], queryFn: api.briefToday });
   const mcp = useQuery({ queryKey: ['diagnostics', 'mcp'], queryFn: api.diagnosticsMcp });

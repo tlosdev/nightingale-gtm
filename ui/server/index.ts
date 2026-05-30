@@ -9,6 +9,8 @@ import express from 'express';
 import helmet from 'helmet';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { SIGNALS_ROOT, repoRoot } from './lib/paths.js';
 import { briefRouter } from './routes/brief.js';
 import { pendingRouter } from './routes/pending.js';
@@ -30,7 +32,9 @@ app.use(helmet({
       // React sometimes emits inline styles for layout; allow them. No inline scripts.
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
-      imgSrc: ["'self'", 'data:'],
+      // Allow https images so markdown rendering doesn't break on external img refs
+      // (CT.gov, persona docs, etc.). data: kept for our SVG favicon.
+      imgSrc: ["'self'", 'data:', 'https:'],
       connectSrc: ["'self'"],
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
@@ -39,14 +43,31 @@ app.use(helmet({
   },
   // No HSTS — loopback HTTP only.
   hsts: false,
+  // COEP=require-corp would silently block external images from servers that
+  // don't send Cross-Origin-Resource-Policy headers (which is most of them).
+  // Disable so markdown img tags actually render.
+  crossOriginEmbedderPolicy: false,
 }));
 
-app.use(express.json({ limit: '64kb' }));
+// Strict body parser: only application/json content-type, max 64kb. Defends
+// against `text/plain` form-post bypass attempts even though CORS already
+// rejects cross-origin.
+app.use(express.json({ type: 'application/json', limit: '64kb' }));
+
+// Per-request UUID for correlating an error response with a server log line.
+// Operators debugging a failed apply can grep for the id in the terminal.
+app.use((_req, res, next) => {
+  res.locals.requestId = crypto.randomUUID();
+  next();
+});
 
 // Hand-rolled CORS: only allow same-origin (the server itself). No
 // Access-Control-Allow-Origin: * ever. Browser tabs on other origins
-// (including other localhost ports) get blocked at the preflight.
+// (including other localhost ports) get blocked.
 app.use((req, res, next) => {
+  // Always set Vary: Origin so intermediate caches don't reuse a CORS-tagged
+  // response across origins.
+  res.setHeader('Vary', 'Origin');
   const origin = req.headers.origin;
   const selfOrigin = `http://${HOST}:${PORT}`;
   if (origin && origin === selfOrigin) {
@@ -85,9 +106,9 @@ app.use('/api/feedback', feedbackRouter);
 app.use('/api/agents', agentsRouter);
 app.use('/api/diagnostics', diagnosticsRouter);
 
-// Static frontend served from web/dist. Resolved relative to this file's
-// location so it works whether run via tsx (server/ direct) or built.
-const distDir = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', 'web', 'dist');
+// Static frontend served from web/dist. fileURLToPath handles Windows paths
+// + percent-encoding correctly (paths with spaces work).
+const distDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir, { index: 'index.html', maxAge: 0 }));
   // SPA fallback — any non-API path serves index.html.
@@ -104,10 +125,12 @@ if (fs.existsSync(distDir)) {
 }
 
 // Error handler — log + return JSON. Never leak stack traces.
+// Includes a request_id correlating the log line with the response.
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('[ui]', err);
+  const requestId = (res.locals.requestId as string | undefined) ?? 'no-id';
+  console.error(`[ui] [${requestId}]`, err);
   if (!res.headersSent) {
-    res.status(500).json({ error: 'internal_error' });
+    res.status(500).json({ error: 'internal_error', request_id: requestId });
   }
 });
 

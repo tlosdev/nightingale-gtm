@@ -29,9 +29,29 @@ export interface ClaudeRunOptions {
  * - Re-validates against the allowlist as defense-in-depth.
  * - cwd is locked to the repo root so the `claude` CLI discovers the
  *   `.claude/agents/` directory.
- * - Environment is inherited (claude needs at least PATH + Anthropic auth
- *   tokens it manages itself). Do NOT add secrets to the env here.
+ * - Environment is MINIMAL — only the Windows + Node basics the CLI needs
+ *   to find PATH, user profile, temp dirs, and Anthropic-stored credentials
+ *   (which the CLI keeps under %APPDATA% / %LOCALAPPDATA%). The parent's
+ *   full env is NOT inherited, so any sensitive variables set in the shell
+ *   the operator launched start-ui.ps1 from do not leak into the subprocess.
  */
+const SUBPROCESS_ENV_KEYS = [
+  'PATH', 'PATHEXT',
+  'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  'APPDATA', 'LOCALAPPDATA',
+  'TEMP', 'TMP',
+  'SystemRoot', 'SystemDrive', 'ComSpec',
+  'USERNAME', 'USERDOMAIN',
+] as const;
+
+function minimalEnv(): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const k of SUBPROCESS_ENV_KEYS) {
+    const v = process.env[k];
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
 export async function runClaude(phrase: string, opts: ClaudeRunOptions = {}): Promise<ClaudeRunResult> {
   if (!isPhraseAllowed(phrase)) {
     throw new Error(`Trigger phrase rejected by allowlist: ${JSON.stringify(phrase)}`);
@@ -52,6 +72,7 @@ export async function runClaude(phrase: string, opts: ClaudeRunOptions = {}): Pr
       shell: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: minimalEnv(),
     });
 
     const timer = setTimeout(() => {

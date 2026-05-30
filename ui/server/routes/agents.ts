@@ -81,6 +81,19 @@ const RunRequestSchema = z.object({
   agent: z.enum(Object.keys(AGENT_TRIGGERS) as [AgentName, ...AgentName[]]),
 });
 
+// Per-agent timeout. Apify-driven and long-aggregating agents need more
+// headroom — a full nightly hubspot-manager run with 20+ writes including
+// per-attendee Apify polls can hit 10+ minutes.
+const AGENT_TIMEOUT_MS: Record<AgentName, number> = {
+  'hubspot-manager': 15 * 60 * 1000,
+  'intro-finder': 15 * 60 * 1000,
+  'signal-watcher-commercial': 15 * 60 * 1000,
+  'signal-watcher-academic': 15 * 60 * 1000,
+  'gmail-resurfacer': 10 * 60 * 1000,
+  'feedback-analyzer': 10 * 60 * 1000,
+  'daily-brief': 5 * 60 * 1000,
+};
+
 agentsRouter.post('/run', async (req, res) => {
   const parse = RunRequestSchema.safeParse(req.body);
   if (!parse.success) {
@@ -88,8 +101,9 @@ agentsRouter.post('/run', async (req, res) => {
     return;
   }
   const phrase = AGENT_TRIGGERS[parse.data.agent];
+  const timeoutMs = AGENT_TIMEOUT_MS[parse.data.agent] ?? 5 * 60 * 1000;
   try {
-    const result = await runClaude(phrase, { timeoutMs: 5 * 60 * 1000 });
+    const result = await runClaude(phrase, { timeoutMs });
     res.json({
       agent: parse.data.agent,
       phrase,

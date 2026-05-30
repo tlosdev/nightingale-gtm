@@ -6,17 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <title>Nightingale</title>
-    <script>
-      // Pre-paint dark-mode init so we don't flash a wrong-theme background.
-      (function () {
-        try {
-          const stored = localStorage.getItem('nightingale-theme');
-          if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            document.documentElement.classList.add('dark');
-          }
-        } catch (e) { /* ignore */ }
-      })();
-    </script>
+    <!--
+      Dark-mode init runs from main.tsx after bundle load. We do NOT
+      inline a pre-paint script here because the CSP scriptSrc directive
+      (set by helmet in the Express server) is locked to 'self' with no
+      'unsafe-inline' and no nonce — a CDN of `'unsafe-inline'` would
+      defeat the protection.
+      Trade-off: brief flash of light theme on first paint before React
+      mounts. Worth it.
+    -->
   </head>
   <body class="h-full bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
     <div id="root" class="h-full"></div>

@@ -102,17 +102,3 @@ export interface NightingaleTaskInfo {
   last_task_result: number | null;
 }
 
-/**
- * Open a file in the operator's default Markdown viewer via the Windows
- * shell. Used by "View source markdown" buttons. The path is validated by
- * the caller via safeResolveInSignals.
- */
-export async function openInDefaultApp(filePath: string): Promise<PSResult> {
-  // start "" "C:\path\to\file.md" — opens with default handler.
-  // The path is wrapped in PowerShell single quotes to neutralize any
-  // characters; caller has already validated against safeResolveInSignals so
-  // it lives under the signals tree.
-  const escaped = filePath.replace(/'/g, "''");
-  const script = `Start-Process -FilePath '${escaped}'`;
-  return runFixedPs(script);
-}
