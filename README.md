@@ -50,6 +50,21 @@ If any step fails, the relevant agent will write a `*_NOT_AUTHORIZED-{date}.md` 
 
 ---
 
+## Launch the UI (optional)
+
+Don't want to open Desktop md files one at a time? There's an optional local web control panel — single-pane view of every agent output, inline Apply/Reject buttons for the HubSpot pending queue, on-demand "Run now" buttons for each agent.
+
+```powershell
+# One-time: install Node.js 18 LTS or newer from https://nodejs.org/
+.\scripts\start-ui.ps1
+```
+
+That script handles the rest (first-time `npm install` ~30-60s, then build, then start). Opens `http://localhost:8765` in your default browser. Ctrl+C to stop.
+
+The UI is **opt-in** — the chain works identically whether or not it's running. It binds to loopback only (no LAN exposure), has a strict allowlist of trigger phrases it can invoke, and never returns secret values from `secrets.json`. See `ui/README.md` for architecture + security details.
+
+---
+
 ## Quick start (compressed — for users who've read the punch list)
 
 ```powershell
@@ -369,11 +384,17 @@ nightingale-gtm/
 │   └── academic-persona.md
 ├── 06-agent-documentation/
 │   └── signal-watcher-setup.md                          # detailed setup + troubleshooting per agent
-└── scripts/
-    ├── install-schedule.ps1                             # registers 6 Task Scheduler entries
-    ├── setup-secrets.ps1                                # captures Apify + LinkedIn credentials (schema v3)
-    ├── run-one-apify-call.ps1                           # per-target worker (called by intro-finder one-shots)
-    └── run-one-apify-company-roster.ps1                 # per-attendee Layer-B worker (called by daily-brief, optional)
+├── scripts/
+│   ├── install-schedule.ps1                             # registers 6 Task Scheduler entries
+│   ├── setup-secrets.ps1                                # captures Apify + LinkedIn credentials (schema v3)
+│   ├── run-one-apify-call.ps1                           # per-target worker (called by intro-finder one-shots)
+│   ├── run-one-apify-company-roster.ps1                 # per-attendee Layer-B worker (called by daily-brief, optional)
+│   └── start-ui.ps1                                     # launches the optional UI control panel
+└── ui/                                                  # optional local Node.js + React control panel
+    ├── README.md
+    ├── package.json
+    ├── server/                                          # Express server (loopback only)
+    └── web/                                             # React + TypeScript + Vite frontend
 ```
 
 ---

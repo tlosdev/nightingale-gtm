@@ -26,3 +26,8 @@ nightingale-signals/
 
 # Logs
 *.log
+
+# UI build artifacts + per-machine node deps (UI source is committed; outputs are not)
+ui/node_modules/
+ui/web/dist/
+ui/.vite/
