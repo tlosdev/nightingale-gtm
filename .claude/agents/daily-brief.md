@@ -84,6 +84,17 @@ Read `~/.nightingale/secrets.json` (existence only). If present, check whether `
 
 If secrets.json is missing entirely, set `layer_b_actor_configured = false` and continue. Layer-B will fall back to WebSearch.
 
+### HubSpot-manager pending-queue probe
+
+Check whether the hubspot-manager pending tree exists at `~/Desktop/nightingale-signals/hubspot-manager/pending/`:
+
+1. If the directory does not exist OR contains no `*.json` files (excluding the `archive/` subdir): set `pending_hubspot_items = []`. Skip the Step 3 "Pending HubSpot updates" section entirely. Do not create the directory.
+2. If it exists with one or more `*.json` files: load every non-archived `pending/{date}.json`. Read `state/approval-history.jsonl` from the hubspot-manager state directory (if present) to determine which `pending_id` values have already been decided.
+3. Build `pending_hubspot_items` as the flat list of every `queued_item` whose `pending_id` does NOT appear in `approval-history.jsonl`. Sort by `run_date` descending (newest first), then by `pending_id`.
+4. Cap at 15 items. If more, track the overflow count for the Step 3 footer.
+
+If the hubspot-manager state files exist but are unreadable / malformed, log a warning and set `pending_hubspot_items = []` — never block the brief on a hubspot-manager state issue.
+
 ---
 
 ## Step 1 — Calendar enumeration + filter
@@ -216,7 +227,24 @@ Shape (fill `{...}` placeholders with real values):
 
 ```
 # Daily Brief — {today}
-*meetings today: {N_today_external} | meetings tomorrow: {N_tomorrow_external} | Layer-A cache hits: {N_cached} | Layer-B Apify lookups: {N_apify} | Layer-B WebSearch fallbacks: {N_websearch}*
+*meetings today: {N_today_external} | meetings tomorrow: {N_tomorrow_external} | Layer-A cache hits: {N_cached} | Layer-B Apify lookups: {N_apify} | Layer-B WebSearch fallbacks: {N_websearch} | pending HubSpot updates: {N_pending}*
+
+## ⏳ Pending HubSpot updates from hubspot-manager
+
+(This entire section is omitted if `pending_hubspot_items` is empty.)
+
+| # | Suggested action | Target | Why suggested | Run date |
+|---|---|---|---|---|
+| 7 | move_deal_stage → appointmentscheduled | Deal Acme Bio Phase 2 Eval | Transcript: prospect agreed to follow-up + asked for proposal | 2026-05-29 |
+| 9 | create_contact | Jane Doe <jane@biotechco.com>, CMO | Reply from CMO Jane in thread but no HubSpot contact exists | 2026-05-29 |
+| 12 | update_contact_location | Sarah Chen | Demographic field — territory implications | 2026-05-28 |
+
+*Showing first 15 items. {N_overflow} more — run `list pending hubspot updates` for full cross-day view.*  (Footer omitted if no overflow.)
+
+**To act:** run `apply hubspot updates {N,N,N} from {run_date}` (or `reject hubspot updates {N,N,N} from {run_date}`).
+**Convenience:** `apply hubspot updates all from {run_date}` to approve every undecided item in one shot.
+
+---
 
 ## Today's external meetings
 

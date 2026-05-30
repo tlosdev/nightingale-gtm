@@ -1,6 +1,6 @@
 # nightingale-gtm
 
-Six agents for Nightingale's GTM motion — five signal-first prospect-discovery agents plus one feedback-loop agent that closes the loop with persona-refinement proposals from calls + emails. They run on Windows + Claude Code, hit public clinical-trial / regulatory / funding / academic-research feeds plus your LinkedIn network, your Gmail history, your Google Calendar, and a team-shared Google Drive folder of call transcripts, and drop daily/weekly markdown files on your Desktop.
+Seven agents for Nightingale's GTM motion — five signal-first prospect-discovery agents, one feedback-loop agent that closes the loop with persona-refinement proposals from calls + emails, and one nightly HubSpot writer that turns the day's transcripts + replies into CRM updates under a strict two-tier guardrail. They run on Windows + Claude Code, hit public clinical-trial / regulatory / funding / academic-research feeds plus your LinkedIn network, your Gmail history, your Google Calendar, your HubSpot account, and a team-shared Google Drive folder of call transcripts, and drop daily/weekly markdown files on your Desktop.
 
 - **`signal-watcher-commercial`** — biotech / pharma / med-device sponsors, 10–200 employees, US. Sources: ClinicalTrials.gov, SEC EDGAR 8-Ks, openFDA, press wires, LinkedIn job postings, Apollo funding.
 - **`signal-watcher-academic`** — US academic medical centers and research hospitals running human-subjects studies. Sources: ClinicalTrials.gov (academic Lead Sponsor or Facility), NIH RePORTER, SBIR/STTR, university press / news.
@@ -9,6 +9,7 @@ Six agents for Nightingale's GTM motion — five signal-first prospect-discovery
 - **`gmail-resurfacer`** — runs daily Mon–Fri 7am (parallel to intro-finder, NOT chained). Walks 12 months of Gmail history forward from a cursor, scores every thread against both personas, and surfaces the top 5 contacts to re-engage today with HubSpot state annotation. Fully read-only against Gmail / HubSpot / Apollo. Never quotes email body verbatim.
 - **`daily-brief`** — runs daily Mon–Fri 6am (one hour before the 7am stack so it lands first). Pulls today + tomorrow's Google Calendar, filters to external meetings, and assembles per-meeting prep including persona match, recent thread context, cross-agent context, Layer-A cached intro suggestions (reverse-lookup against intro-finder's `found-mutuals.json`), Layer-B fresh persona-roster intros (Apify with WebSearch fallback), recommended talking points, and HubSpot state. Fully read-only across all sources.
 - **`feedback-analyzer`** — runs on-demand (no Task Scheduler entry; trigger via `RUN feedback-analyzer` or wire up your own weekly cron). Reads call transcripts from the team-shared Google Drive folder `/curanostics/nightingale/call transcripts` AND your inbound Gmail replies (last 7 days), scores them with a weighted confidence model (calls 1.0 / generic email 0.3 / value-prop-quoting or explicit-disqualification email 0.5), and emits a propose-only refinement report with literal before/after diffs against the persona files. Output lands on your Desktop at `~/Desktop/nightingale-signals/feedback-insights/` — never in the repo tree (the report contains verbatim prospect quotes and would otherwise risk being committed to a shared remote).
+- **`hubspot-manager`** — runs nightly Mon-Sun 11pm. The only agent that WRITES to HubSpot. Reads the last 24h of new Granola transcripts + inbound Gmail replies and turns them into HubSpot writes under a strict two-tier guardrail. Auto-applies up to 20 low-risk items per night (log call/email/note engagements; populate-empty contact metadata like title, LinkedIn URL, phone, last-contacted). Queues everything else (object creation, deal stage/amount/close-date/owner/lifecycle changes, demographics/firmographics, strategic notes, anything that would overwrite a recently-set value, anything touching an active deal with activity in the last 7 days). Queued items appear at the top of the next morning's daily-brief; you approve with `apply hubspot updates {N,N,N} from {date}` (or `reject ...`). Never deletes. Never merges. Idempotent re-runs via dedup keys + transaction log. Requires HubSpot MCP authorization (see prerequisites).
 
 This repo is **Windows-only** as of 2026-05. macOS and Linux are not supported.
 
@@ -45,11 +46,12 @@ That's it. Step 2 registers three Windows Task Scheduler entries. Step 3 is **op
 
 | Task | Cadence | What it does |
 |---|---|---|
-| `Nightingale-Daily-Brief-Morning`        | Mon–Fri 6am local        | Daily brief: today + tomorrow calendar prep with per-meeting persona match, cross-agent context, and intro suggestions |
+| `Nightingale-Daily-Brief-Morning`        | Mon–Fri 6am local        | Daily brief: today + tomorrow calendar prep with per-meeting persona match, cross-agent context, intro suggestions, and the hubspot-manager pending-approval queue at the top |
 | `Nightingale-Commercial-Sweep`           | Monday 7am local         | Commercial sweep + buying-group discovery |
 | `Nightingale-Academic-Sweep`             | Monday 7am local         | Academic sweep + buying-group discovery |
 | `Nightingale-Intro-Finder-Morning`       | Sun–Fri 7am local        | Intro-finder: delivery (Mon–Fri) + queue (Sun–Thu) |
 | `Nightingale-Gmail-Resurfacer-Morning`   | Mon–Fri 7am local        | Gmail re-surfacer: walks 12-month inbox history, surfaces top 5 contacts to re-engage today |
+| `Nightingale-HubSpot-Manager-Nightly`    | Mon–Sun 11pm local       | Reads last 24h of Granola transcripts + Gmail replies, auto-applies ≤20 low-risk HubSpot writes, queues everything else for next-morning approval |
 
 The intro-finder's queue phase additionally registers per-target Windows Task Scheduler one-shots that fire at randomized times between 8am and 8pm on the same day, with a minimum 30-second gap between any two fires. These one-shots auto-delete 2 hours after they run.
 
@@ -68,22 +70,26 @@ C:\Users\{you}\Desktop\nightingale-signals\
 ├── daily-brief\
 │   ├── state\                                            # attendee-roster cache + brief history + LinkedIn-URL cache
 │   └── output\daily-brief-YYYY-MM-DD.md                  # daily brief (Mon–Fri, when Google Calendar MCP authorized)
-└── feedback-insights\
-    ├── state\                                            # _processed.md + _patterns.md (weighted-source schema)
-    └── output\refinement-YYYY-MM-DD.md                   # propose-only persona-refinement diffs (on-demand)
+├── feedback-insights\
+│   ├── state\                                            # _processed.md + _patterns.md (weighted-source schema)
+│   └── output\refinement-YYYY-MM-DD.md                   # propose-only persona-refinement diffs (on-demand)
+└── hubspot-manager\
+    ├── state\                                            # processed-sources + transactions.jsonl + approval-history.jsonl
+    ├── pending\YYYY-MM-DD.json                           # nightly queue file; consumed by daily-brief + apply/reject modes
+    │   └── archive\YYYY-MM-DD.json                       # fully-decided pending files moved here
+    └── output\run-YYYY-MM-DD.md                          # nightly run summary
 ```
 
 The `nightingale-signals\` folder is created automatically on the first run.
 
 ---
 
-## Intro-finder + Gmail Re-Surfacer + Daily Brief are opt-in
-
-Three of the five agents need external authorization:
+## Four agents are opt-in (need external authorization)
 
 - `intro-finder` needs Apify + a LinkedIn `li_at` cookie (set up via `scripts/setup-secrets.ps1`).
 - `gmail-resurfacer` needs the Gmail MCP connector authorized in Claude Code (Settings → Connectors → Gmail). Optionally also authorize the HubSpot + Apollo + ClinicalTrials.gov MCP connectors for richer scoring and annotation.
 - `daily-brief` needs the Google Calendar MCP connector authorized in Claude Code (Settings → Connectors → Google Calendar). Optionally: Gmail MCP for attendee identity resolution + recent thread context, HubSpot MCP for state annotation, Apollo MCP for company enrichment, ClinicalTrials.gov MCP for trial-design-window cross-ref, and a second optional Apify Actor (`apify_company_roster_actor_id`, set via `scripts/setup-secrets.ps1` schema v3) for richer Layer-B persona-roster intros. Without the Layer-B Actor, daily-brief falls back to WebSearch automatically.
+- `hubspot-manager` REQUIRES the HubSpot MCP connector authorized in Claude Code (Settings → Connectors → HubSpot). See **HubSpot MCP authorization** below for the OAuth walkthrough. Without it, every nightly run writes a `HUBSPOT_NOT_AUTHORIZED-{date}.md` notice on your Desktop with step-by-step setup instructions and exits cleanly.
 
 Without those:
 
@@ -92,6 +98,33 @@ Without those:
 - `intro-finder` ⚠ runs but writes `SECRETS_MISSING-{date}.md` notices instead of intros
 - `gmail-resurfacer` ⚠ runs but writes `GMAIL_NOT_AUTHORIZED-{date}.md` notices instead of contact lists
 - `daily-brief` ⚠ runs but writes `CALENDAR_NOT_AUTHORIZED-{date}.md` notices instead of meeting prep
+- `hubspot-manager` ⚠ runs but writes `HUBSPOT_NOT_AUTHORIZED-{date}.md` notices instead of HubSpot writes
+
+## HubSpot MCP authorization
+
+The hubspot-manager agent will NOT write to HubSpot until the HubSpot MCP connector is authorized in Claude Code. Each Nightingale team member authorizes their own HubSpot account independently — the agent picks the authenticated operator as the engagement owner and never assigns work to another team member without explicit approval.
+
+### One-time setup (Claude Code)
+
+1. Open Claude Code.
+2. Settings → Connectors → search "HubSpot".
+3. Click "Authorize" / "Connect". A browser tab opens to HubSpot's OAuth flow.
+4. Sign in to your HubSpot account.
+5. Approve the requested scopes:
+   - `crm.objects.contacts` (read + write)
+   - `crm.objects.companies` (read + write)
+   - `crm.objects.deals` (read + write)
+   - `crm.objects.notes` (read + write)
+   - `crm.schemas.contacts` (read), `crm.schemas.companies` (read), `crm.schemas.deals` (read)
+   - `crm.objects.owners` (read)
+   - `sales-email-read` (for engagement context)
+6. Return to Claude Code — the connector should show "Connected".
+
+Verify: run `claude -p "list pending hubspot updates"` — should return without error (probably "no pending items" on a fresh install).
+
+If you authorized into the WRONG HubSpot account (e.g. personal vs team), disconnect from the same Settings → Connectors screen and re-authorize.
+
+The agent is fully read-then-cautious-write — see `06-agent-documentation/signal-watcher-setup.md` "HubSpot Manager" section for the full auto-eligible / queue-only field tables, the two-tier guardrail rationale, and the approval workflow.
 
 To enable intros, run `setup-secrets.ps1`. It prompts for four things in one flow:
 
@@ -126,7 +159,7 @@ Implications:
 To uninstall everything:
 
 ```powershell
-Unregister-ScheduledTask -TaskName 'Nightingale-Daily-Brief-Morning','Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning' -Confirm:$false
+Unregister-ScheduledTask -TaskName 'Nightingale-Daily-Brief-Morning','Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning','Nightingale-HubSpot-Manager-Nightly' -Confirm:$false
 ```
 
 To delete credentials:
@@ -170,7 +203,8 @@ nightingale-gtm/
 │       ├── intro-finder.md
 │       ├── gmail-resurfacer.md
 │       ├── daily-brief.md
-│       └── feedback-analyzer.md
+│       ├── feedback-analyzer.md
+│       └── hubspot-manager.md
 ├── 01-personas/
 │   ├── commercial-persona.md
 │   └── academic-persona.md

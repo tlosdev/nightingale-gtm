@@ -202,8 +202,9 @@ Every scheduled Monday sweep ends with a **Step 11 hand-off** that invokes the c
 | `.claude/agents/buying-group-finder-academic.md` | Academic contact discovery + email scraping (auto-chained after the academic sweep) |
 | `.claude/agents/intro-finder.md` | Daily warm-intro discovery (Sun-Fri 7am). Consumes the active buying-group file, calls Apify per target via OS-scheduled one-shots, delivers each prior day's intros each morning. |
 | `.claude/agents/gmail-resurfacer.md` | Daily Gmail re-surfacer (Mon-Fri 7am). Walks 12 months of Gmail history forward from a cursor, scores threads against both personas, surfaces top 5 contacts to re-engage today with HubSpot state annotation. Read-only against Gmail/HubSpot/Apollo. No verbatim email body in output. |
-| `.claude/agents/daily-brief.md` | Daily morning calendar brief (Mon-Fri 6am, fires before the 7am stack). Pulls today + tomorrow's calendar, filters to external meetings, assembles per-meeting prep with persona match, recent thread context, cross-agent context, Layer-A cached intro suggestions (via intro-finder's found-mutuals.json) and Layer-B fresh persona-roster intros (Apify or WebSearch fallback). Read-only against all sources. |
+| `.claude/agents/daily-brief.md` | Daily morning calendar brief (Mon-Fri 6am, fires before the 7am stack). Pulls today + tomorrow's calendar, filters to external meetings, assembles per-meeting prep with persona match, recent thread context, cross-agent context, Layer-A cached intro suggestions (via intro-finder's found-mutuals.json) and Layer-B fresh persona-roster intros (Apify or WebSearch fallback). Read-only against all sources. Also surfaces the hubspot-manager pending-approval queue at the top of the brief. |
 | `scripts/run-one-apify-company-roster.ps1` | Layer-B worker for daily-brief. Invoked synchronously per meeting attendee (cap 8/day). Reads optional `apify_company_roster_actor_id` from secrets v3; if absent, the agent falls back to WebSearch without invoking this script. Same conventions as `run-one-apify-call.ps1` (header auth, atomic write, distinct 404 / 429 / cookie-expired statuses). |
+| `.claude/agents/hubspot-manager.md` | Nightly Mon-Sun 11pm HubSpot writer. Reads last 24h of Granola transcripts + Gmail replies, generates per-source candidates, auto-applies up to 20 low-risk items (call/email logging + summary notes + populate-empty contact metadata), queues everything else for next-morning daily-brief approval. Only agent that writes to HubSpot. Strict guardrails: no deletes, no merges, no overwriting recent values, no cross-operator assignment, active-deal protection. Idempotent via dedup keys + transaction log. Requires the HubSpot MCP connector authorized in Claude Code (OAuth walkthrough in this same doc under "HubSpot Manager"). |
 | `.claude/agents/feedback-analyzer.md` | On-demand or weekly feedback-loop agent. Reads call transcripts from `/curanostics/nightingale/call transcripts` (team-shared Drive folder) and the operator's inbound Gmail replies, scores them with a weighted confidence model, and emits a propose-only refinement report with literal before/after diffs against the persona files (and any optional diff-target files present in the local checkout). Outputs land on the operator's Desktop at `~/Desktop/nightingale-signals/feedback-insights/`, never in the repo tree. |
 | `scripts/setup-secrets.ps1` | One-time per-machine setup. Prompts for Apify API token + Actor ID + your LinkedIn profile URL + `li_at` cookie. Validates all four against Apify in one round-trip. Writes `~/.nightingale/secrets.json` with restricted ACL. |
 | `scripts/run-one-apify-call.ps1` | Per-target worker invoked by a Windows Scheduled Task one-shot. Calls Apify Actor once via header auth, polls, writes result JSON atomically. Handles 404 / 429 / cookie-expiry as distinct statuses. |
@@ -619,3 +620,128 @@ Daily-brief and gmail-resurfacer paraphrase email body content because their out
 - No outreach generation.
 - No auto-apply of diffs (operator must explicitly request `apply diffs N,N,N from refinement-{date}` and even then a separate apply pass is required).
 - No Outlook / non-Google mail support in v1.
+
+---
+
+## HubSpot Manager — nightly Mon–Sun 11pm
+
+The `hubspot-manager` agent is the seventh stage of the chain and the **only agent that writes to HubSpot**. Every night at 11pm local it reads the last 24 hours of new Granola transcripts + inbound Gmail replies and turns them into HubSpot writes under a strict two-tier guardrail. The next morning's daily-brief surfaces anything that required approval at the top of the brief.
+
+### Why it exists
+
+The other six agents PRODUCE briefs and reports. None of them updates the CRM. Calls happen, transcripts get written, emails land, and HubSpot drifts behind reality — by the time the operator sits down to update HubSpot manually, half the context is lost. The hubspot-manager closes that loop, but cautiously: it auto-applies activity logging + populate-empty metadata refreshes, and queues every pipeline-state change for explicit approval.
+
+### Two-tier guardrail
+
+**Auto-apply (capped at 20 writes per night).** These are either obviously true or trivially reversible:
+
+1. `log_call` — log a Meeting or Call engagement when a fresh Granola transcript matches an existing HubSpot contact.
+2. `log_email` — log an incoming Email engagement when a qualifying reply matches an existing HubSpot contact.
+3. `add_summary_note` — for every `log_call` / `log_email` that auto-applied, also create a ≤3-sentence paraphrased summary Note engagement (paraphrased, never verbatim — Notes are visible across HubSpot UI/exports). Strategic notes never auto-apply.
+4. `update_contact_title` — populate empty `jobtitle` OR refresh a stale value (>30 days old) from a fresh signature scrape.
+5. `update_contact_linkedin` — populate empty `linkedin_url` from a fresh signature scrape. **Populate-empty only; never overwrite.**
+6. `update_contact_phone` — populate empty `phone` from a fresh signature scrape. **Populate-empty only; never overwrite.**
+7. `update_contact_lastcontacted` — bump the `notes_last_contacted` timestamp after a logged call/email.
+
+**Populate-empty / refresh-stale guard:** any proposed write that would OVERWRITE a currently-non-empty property modified within the last 30 days is automatically downgraded to queue with `queue_reason: "would overwrite recent existing value"`.
+
+**Queue for approval (no auto-apply ever, no cap):**
+
+- **Object creation:** `create_contact`, `create_company`.
+- **Deal state:** `move_deal_stage`, `update_deal_amount`, `update_deal_closedate`, `change_owner`, `change_lifecycle`, `disqualify`.
+- **Contact demographics:** `update_contact_industry`, `update_contact_seniority`, `update_contact_persona_or_role`, `update_contact_location` (city/state/country) — affect segmentation and territory; queue even when current value is empty.
+- **Company firmographics:** `update_company_industry`, `update_company_employeecount`, `update_company_annualrevenue`, `update_company_location`, `update_company_domain` — affect ICP fit and segmentation.
+- **Non-summary notes:** `add_strategic_note` — risk assessments, expansion plays, account-status calls.
+- **Active-deal protection:** ANY candidate (auto-eligible or otherwise) against a contact whose associated deal has activity in the last 7 days and is non-terminal — automatically downgrades to queue with rationale showing the active deal info.
+- **Overflow:** any auto-eligible candidate generated AFTER the auto-cap of 20 is reached this run.
+
+### Approval flow (next-morning)
+
+1. Nightly 11pm: hubspot-manager writes `~/Desktop/nightingale-signals/hubspot-manager/pending/{run_date}.json` with every queued item (pending_id, action, target, payload, rationale, source quotes, queue_reason).
+2. Next morning 6am: daily-brief reads the most-recent un-archived pending file(s) and surfaces every undecided item at the top of the brief as a "Pending HubSpot updates" section (capped at 15 items with an overflow footer).
+3. Operator approves with `apply hubspot updates {N,N,N} from {date}` or rejects with `reject hubspot updates {N,N,N} from {date}`. Convenience: `apply hubspot updates all from {date}` and `reject hubspot updates all from {date}`.
+4. Apply mode invokes the HubSpot MCP tool with the queued payload. Reject mode skips the call. Both write to `state/approval-history.jsonl` + `state/transactions.jsonl`. Once every item in a pending file is decided, the file moves to `pending/archive/{date}.json` and stops appearing in daily-brief.
+5. Cross-day view: `list pending hubspot updates` returns every undecided item across every non-archived pending file. Useful when a few days went by without approval.
+
+### Field coverage
+
+| Object | Auto-eligible properties | Queue-only properties |
+|---|---|---|
+| **Contacts** | jobtitle (populate-empty / refresh-stale), linkedin_url (populate-empty), phone (populate-empty), notes_last_contacted | industry, seniority, persona/role, city, state, country, lifecycle stage, lead status (disqualify) |
+| **Companies** | (none auto-eligible; firmographics affect segmentation) | industry, employee count, annual revenue, location, domain |
+| **Deals** | (none auto-eligible; deal state always requires approval) | stage, amount, close date, owner |
+| **Engagements** | calls, meetings, emails (incoming), summary notes (≤3 sentences, paraphrased) | strategic notes |
+
+Anything outside this set falls through to queue with `queue_reason: "unrecognized field — review manually"`.
+
+### Idempotency
+
+Every candidate has a deterministic `dedup_key` (e.g., `log_call:{transcript_file_id}`). Every write attempt (auto_applied, approved, rejected, failed) appends one line to `state/transactions.jsonl`. Re-runs of the same agent or partial-failure retries never produce duplicate writes — the dedup filter at Step 3 short-circuits any candidate whose key is already recorded.
+
+### State + output paths
+
+```
+~/Desktop/nightingale-signals/hubspot-manager/
+├── state/
+│   ├── processed-sources.json     # transcript file_ids + email content-hashes already scanned
+│   ├── transactions.jsonl         # append-only — every HubSpot write attempt (audit + dedup)
+│   └── approval-history.jsonl     # append-only — every operator decision via apply/reject
+├── pending/
+│   ├── {run_date}.json            # nightly queue file; consumed by daily-brief + apply/reject modes
+│   └── archive/{run_date}.json    # fully-decided pending files moved here
+└── output/
+    └── run-{run_date}.md          # nightly run summary
+```
+
+All outputs live on the Desktop — never inside the repo tree. Each operator's transaction log and pending queue stay local to their machine.
+
+### HubSpot MCP authorization required
+
+The hubspot-manager agent will NOT write to HubSpot until the HubSpot MCP connector is authorized in Claude Code. Until then, every nightly run writes a `HUBSPOT_NOT_AUTHORIZED-{date}.md` notice on the operator's Desktop and exits cleanly. The other six agents are unaffected.
+
+#### One-time setup (Claude Code)
+
+1. Open Claude Code.
+2. Settings → Connectors → search "HubSpot".
+3. Click "Authorize" / "Connect". A browser tab opens to HubSpot's OAuth flow.
+4. Sign in to your HubSpot account.
+5. Approve the requested scopes:
+   - `crm.objects.contacts` (read + write)
+   - `crm.objects.companies` (read + write)
+   - `crm.objects.deals` (read + write)
+   - `crm.objects.notes` (read + write)
+   - `crm.schemas.contacts` (read), `crm.schemas.companies` (read), `crm.schemas.deals` (read)
+   - `crm.objects.owners` (read)
+   - `sales-email-read` (for engagement context)
+6. Return to Claude Code — the connector should show "Connected".
+
+Verify: run `claude -p "list pending hubspot updates"` — should return without error (probably "no pending items" on a fresh install).
+
+If you authorized into the WRONG HubSpot account (e.g. personal vs team), disconnect from the same Settings → Connectors screen and re-authorize.
+
+The agent is fully read-then-cautious-write: it reads contacts/companies/deals/notes and only writes the categories listed in the "Auto-eligible properties" table above + the categories the operator explicitly approves via `apply hubspot updates {N,N,N} from {date}`.
+
+#### Per-operator note
+
+Each Nightingale team member authorizes their own HubSpot account independently. The agent picks the authenticated operator as the engagement owner — never assigns work to another team member without explicit approval.
+
+### Trigger phrases
+
+- `nightly hubspot manage` — what cron invokes (fires push).
+- `RUN hubspot-manager` — manual nightly run (no push).
+- `apply hubspot updates {N,N,N} from {date}` — apply specified pending IDs.
+- `apply hubspot updates all from {date}` — apply every undecided item in `pending/{date}.json`.
+- `reject hubspot updates {N,N,N} from {date}` — reject specified pending IDs.
+- `reject hubspot updates all from {date}` — reject every undecided item in `pending/{date}.json`.
+- `list pending hubspot updates` — cross-day view of all undecided items.
+
+### What hubspot-manager does NOT do
+
+- **Never deletes anything.** No path through this agent exposes deletion.
+- **Never merges contacts or companies.**
+- **Never assigns work to anyone other than the authenticated operator.**
+- **Never overwrites a recently-set non-empty property** (last modified ≤ 30 days) without explicit approval.
+- **Never writes verbatim email body content into a Note.** All notes are paraphrased (≤ 3 sentences).
+- **Never reads / touches the LinkedIn `li_at` cookie.**
+- **Never bypasses the 20-auto-applies-per-night cap.**
+- **Never writes outside `~/Desktop/nightingale-signals/hubspot-manager/`.**

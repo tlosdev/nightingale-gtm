@@ -3,13 +3,14 @@
     Registers Windows Task Scheduler entries that drive the Nightingale agent chain.
 
 .DESCRIPTION
-    One-time setup. Run this once after cloning the nightingale repo. Five scheduled
+    One-time setup. Run this once after cloning the nightingale repo. Six scheduled
     tasks are registered:
       - Nightingale-Daily-Brief-Morning        (Mon-Fri 6:00 local — calendar brief, runs before the 7am stack)
       - Nightingale-Commercial-Sweep           (Monday 7:00 local — sweep + buying-group-finder)
       - Nightingale-Academic-Sweep             (Monday 7:00 local — sweep + buying-group-finder)
       - Nightingale-Intro-Finder-Morning       (Sun-Fri 7:00 local — delivery + queue)
       - Nightingale-Gmail-Resurfacer-Morning   (Mon-Fri 7:00 local — Gmail re-surfacer)
+      - Nightingale-HubSpot-Manager-Nightly    (Mon-Sun 11:00pm local — nightly HubSpot writer with two-tier guardrail)
 
     Each task invokes the `claude` CLI headlessly from the cloned repo directory
     with the appropriate trigger phrase.
@@ -18,15 +19,16 @@
     - Claude Code installed and on PATH (the `claude` command must be runnable from a fresh shell)
     - The ClinicalTrials.gov MCP connector authorized (both sweeps + resurfacer + daily-brief)
     - The Apollo.io MCP connector authorized (commercial sweep + resurfacer + daily-brief read-only)
-    - The Gmail MCP connector authorized (resurfacer + daily-brief)
+    - The Gmail MCP connector authorized (resurfacer + daily-brief + hubspot-manager)
     - The Google Calendar MCP connector authorized (daily-brief only)
-    - The HubSpot MCP connector authorized (resurfacer + daily-brief read-only annotation)
+    - The Google Drive MCP connector authorized (feedback-analyzer + hubspot-manager — both read the team-shared call transcripts folder)
+    - The HubSpot MCP connector authorized — REQUIRED for hubspot-manager nightly writes, read-only for resurfacer + daily-brief annotation. See 06-agent documentation/signal-watcher-setup.md "HubSpot Manager" section for the OAuth setup walkthrough.
     - For intro-finder: ~/.nightingale/secrets.json populated via scripts/setup-secrets.ps1
     - For daily-brief Layer-B (optional): the same secrets file with apify_company_roster_actor_id set
     - Internet access from this machine during scheduled times
 
 .NOTES
-    To uninstall:  Unregister-ScheduledTask -TaskName 'Nightingale-Daily-Brief-Morning','Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning' -Confirm:$false
+    To uninstall:  Unregister-ScheduledTask -TaskName 'Nightingale-Daily-Brief-Morning','Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning','Nightingale-HubSpot-Manager-Nightly' -Confirm:$false
     To list:       Get-ScheduledTask -TaskName 'Nightingale-*'
     Windows Task Scheduler runs on LOCAL time, not Eastern.
 #>
@@ -140,13 +142,30 @@ Register-ScheduledTask `
     -Force | Out-Null
 Write-Host "Registered: Nightingale-Gmail-Resurfacer-Morning"
 
+# --- HubSpot manager nightly (Mon-Sun 11pm — fires before midnight rollover so the run is dated correctly for the next morning's daily-brief pickup) ---
+$hubspotNightlyTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday,Monday,Tuesday,Wednesday,Thursday,Friday,Saturday -At "11:00pm"
+$hubspotNightlyAction = New-ScheduledTaskAction `
+    -Execute $claudeCmd.Source `
+    -Argument '-p "nightly hubspot manage"' `
+    -WorkingDirectory $repoRoot
+Register-ScheduledTask `
+    -TaskName 'Nightingale-HubSpot-Manager-Nightly' `
+    -Action $hubspotNightlyAction `
+    -Trigger $hubspotNightlyTrigger `
+    -Principal $principal `
+    -Settings $settings `
+    -Description 'Nightingale HubSpot manager: nightly Mon-Sun 11pm local. Reads last 24h of Granola transcripts + Gmail replies and writes to HubSpot under a two-tier guardrail. Auto-applies up to 20 low-risk items per night (call/email logging, summary notes, populate-empty contact metadata); queues everything else for next-morning approval via the daily-brief pending section.' `
+    -Force | Out-Null
+Write-Host "Registered: Nightingale-HubSpot-Manager-Nightly"
+
 Write-Host ""
 Write-Host "Done. Verify with:  Get-ScheduledTask -TaskName 'Nightingale-*'"
-Write-Host "Next daily-brief run:  next upcoming Mon-Fri at 6:00 AM local time."
-Write-Host "Next sweep run:        next upcoming Monday at 7:00 AM local time."
-Write-Host "Next intro-finder run: next upcoming Sun-Fri at 7:00 AM local time."
-Write-Host "Next resurfacer run:   next upcoming Mon-Fri at 7:00 AM local time."
-Write-Host "Outputs land in: $HOME\Desktop\nightingale-signals\{commercial|academic|resurfacer|daily-brief}\..."
+Write-Host "Next daily-brief run:      next upcoming Mon-Fri at 6:00 AM local time."
+Write-Host "Next sweep run:            next upcoming Monday at 7:00 AM local time."
+Write-Host "Next intro-finder run:     next upcoming Sun-Fri at 7:00 AM local time."
+Write-Host "Next resurfacer run:       next upcoming Mon-Fri at 7:00 AM local time."
+Write-Host "Next hubspot-manager run:  next upcoming day at 11:00 PM local time (Mon-Sun)."
+Write-Host "Outputs land in: $HOME\Desktop\nightingale-signals\{commercial|academic|resurfacer|daily-brief|hubspot-manager}\..."
 Write-Host ""
 Write-Host "If you have not yet run scripts/setup-secrets.ps1, intro-finder will skip the"
 Write-Host "Apify lookup step and write a SECRETS_MISSING-<date>.md notice. Run it before"
@@ -160,3 +179,8 @@ Write-Host "daily-brief will skip cleanly and write a CALENDAR_NOT_AUTHORIZED-<d
 Write-Host "Daily-brief Layer-B persona-roster lookup uses the optional"
 Write-Host "apify_company_roster_actor_id from secrets.json; without it, Layer-B falls back"
 Write-Host "to WebSearch (free, lower coverage). Add the Actor via scripts/setup-secrets.ps1."
+Write-Host ""
+Write-Host "If the HubSpot MCP connector is not authorized in Claude Code, the hubspot-manager"
+Write-Host "will skip cleanly each night and write a detailed HUBSPOT_NOT_AUTHORIZED-<date>.md"
+Write-Host "notice on your Desktop containing step-by-step OAuth setup instructions. See also:"
+Write-Host "06-agent documentation/signal-watcher-setup.md 'HubSpot Manager' section."
