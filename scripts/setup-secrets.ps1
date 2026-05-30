@@ -32,13 +32,49 @@
 
 $ErrorActionPreference = 'Stop'
 
+# --- PowerShell version check ------------------------------------------------
+if ($PSVersionTable.PSVersion.Major -lt 5) {
+    Write-Error "PowerShell $($PSVersionTable.PSVersion) detected; this script requires 5.1 or newer."
+    Write-Error "Upgrade Windows PowerShell (or install PowerShell 7+) and re-run."
+    exit 1
+}
+
+# --- claude CLI on PATH check ------------------------------------------------
+$claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+if (-not $claudeCmd) {
+    Write-Warning "The 'claude' CLI was not found on PATH."
+    Write-Warning "setup-secrets.ps1 will continue (secrets are usable without the CLI)"
+    Write-Warning "but install-schedule.ps1 will not work until claude is installed."
+    Write-Host ''
+}
+
 # --- ExecutionPolicy preflight ----------------------------------------------
+# Note: scheduled tasks invoke 'powershell.exe -ExecutionPolicy Bypass ...' so
+# they will run regardless of CurrentUser policy. This warning is for the user
+# who runs the install/setup scripts MANUALLY in a regular PowerShell session
+# (where CurrentUser policy applies). If you got here via a Bypass-launched
+# session, this script is already running fine and the warning is informational.
 $policy = Get-ExecutionPolicy -Scope CurrentUser
 if ($policy -in @('Restricted', 'AllSigned')) {
     Write-Warning "PowerShell ExecutionPolicy for CurrentUser is '$policy'."
-    Write-Warning "The scheduled tasks invoke 'powershell.exe -ExecutionPolicy Bypass ...' so they will run,"
-    Write-Warning "but manual reruns of these scripts may fail. Recommended fix:"
+    Write-Warning "Scheduled tasks fire via -ExecutionPolicy Bypass and are unaffected,"
+    Write-Warning "but if you ever want to manually re-run install-schedule.ps1 or this"
+    Write-Warning "script from a plain PowerShell window, you need:"
     Write-Warning "    Set-ExecutionPolicy RemoteSigned -Scope CurrentUser"
+    Write-Host ''
+}
+
+# --- Scheduled-task presence check (U1) --------------------------------------
+# Detect whether install-schedule.ps1 has been run. If no Nightingale-* tasks
+# exist, this script will still write secrets correctly, but those secrets sit
+# idle until the install-schedule pass happens. Warn so the operator does the
+# steps in the right order.
+$nightingaleTasks = Get-ScheduledTask -TaskName 'Nightingale-*' -ErrorAction SilentlyContinue
+if (-not $nightingaleTasks -or $nightingaleTasks.Count -eq 0) {
+    Write-Warning "No 'Nightingale-*' scheduled tasks are registered yet."
+    Write-Warning "Run scripts/install-schedule.ps1 BEFORE relying on intro-finder /"
+    Write-Warning "daily-brief / hubspot-manager — otherwise the secrets this script"
+    Write-Warning "captures will not be read by anything."
     Write-Host ''
 }
 
@@ -46,6 +82,9 @@ $secretsDir  = Join-Path $env:USERPROFILE '.nightingale'
 $secretsPath = Join-Path $secretsDir 'secrets.json'
 
 # --- Ensure ~/.nightingale exists with restrictive ACL -----------------------
+# ACL recovery: if you ever need to restore default permissions on this
+# directory or its files (e.g. after a profile / username change), run:
+#     icacls "$env:USERPROFILE\.nightingale" /reset /T /C
 if (-not (Test-Path $secretsDir)) {
     New-Item -ItemType Directory -Path $secretsDir | Out-Null
 }
@@ -63,6 +102,7 @@ try {
 } catch {
     Write-Warning "Could not lock down ACL on ${secretsDir}: $($_.Exception.Message)"
     Write-Warning "Continuing; please verify file permissions manually."
+    Write-Warning "Recovery: icacls `"$secretsDir`" /reset /T /C"
 }
 
 # --- Load existing secrets ---------------------------------------------------
@@ -165,6 +205,11 @@ if ($promptActor) {
 }
 
 # --- Prompt: validation URL (your own LinkedIn profile) ---------------------
+# Note: this URL is intentionally retained in secrets.json. It is used at
+# every re-run of setup-secrets.ps1 (and any future setup-secrets-style
+# rotation workflow) to re-validate that the Apify Actor + cookie still work
+# without re-prompting. The URL is your own public LinkedIn profile, which is
+# already discoverable; no privacy uplift from discarding it.
 $validationUrl = if ($existing) { $existing.apify_validation_url } else { $null }
 if ($promptValidationUrl) {
     Write-Host ''
@@ -176,6 +221,15 @@ if ($promptValidationUrl) {
     $validationUrl = (Read-Host 'Your LinkedIn profile URL').Trim()
     if ([string]::IsNullOrWhiteSpace($validationUrl)) {
         Write-Error 'Empty validation URL. Aborting.'
+        exit 1
+    }
+    # U17 — validate the URL is a LinkedIn profile, not someone else's URL
+    # or a malformed string. Catches typos before the Apify spend happens.
+    if ($validationUrl -notmatch '^https?://([a-z]{2,3}\.)?linkedin\.com/in/[^/\s?#]+/?$') {
+        Write-Error "validation URL does not look like a LinkedIn profile."
+        Write-Error "Expected format: https://linkedin.com/in/{your-slug}"
+        Write-Error "Got: $validationUrl"
+        Write-Error "Aborting before we burn Apify credit on the wrong target."
         exit 1
     }
 }
@@ -190,6 +244,13 @@ if ($promptLiAt) {
     Write-Host "2. Press F12 -> DevTools -> 'Application' tab"
     Write-Host '3. Left sidebar: Storage -> Cookies -> https://www.linkedin.com'
     Write-Host "4. Find the row named 'li_at' and copy the Value column"
+    Write-Host ''
+    Write-Host 'Heads-up: at validation time below, this cookie value is sent to the'
+    Write-Host 'Apify Actor you picked above (third-party scraping service). The Actor'
+    Write-Host 'uses it to drive a logged-in LinkedIn browser session on your behalf.'
+    Write-Host 'This is unavoidable for mutual-connections scraping and violates'
+    Write-Host 'LinkedIn ToS. See 06-agent-documentation/signal-watcher-setup.md for'
+    Write-Host 'the full ToS / account-safety discussion before continuing.'
     Write-Host ''
     $liAt = (Read-MaskedString 'Paste li_at value (input hidden)').Trim()
     if ([string]::IsNullOrWhiteSpace($liAt)) {
@@ -264,18 +325,25 @@ try {
     $runId = $startResp.data.id
     if (-not $runId) { throw 'Apify did not return a run id' }
 } catch {
-    $msg = $_.Exception.Message
-    if ($msg -match '404') {
-        Write-Error "Actor '$actorId' not found in your Apify account."
+    # L10 — prefer HTTP status code over message-string matching. The exception
+    # message is brittle: a proxy or wrapped error might not contain '404' literally.
+    $statusCode = $null
+    try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
+    if ($statusCode -eq 404) {
+        Write-Error "Actor '$actorId' not found in your Apify account (HTTP 404)."
         Write-Error 'Verify in https://console.apify.com/actors and re-run with the correct Actor ID.'
+    } elseif ($statusCode -eq 429) {
+        Write-Error "Apify rate-limited (HTTP 429). Wait until reset or upgrade your Apify plan."
     } else {
-        Write-Error "Apify Actor run could not be started: $msg"
+        Write-Error "Apify Actor run could not be started (HTTP $statusCode): $($_.Exception.Message)"
     }
     Write-Error 'Secrets file NOT written.'
     exit 1
 }
 
-# Poll the validation run (cap 2 minutes)
+# Poll the validation run (cap 2 minutes). U16 — print a dot every poll cycle
+# so the operator sees progress instead of staring at a silent 2-minute wait.
+Write-Host -NoNewline 'Polling Apify '
 $delay      = 5
 $totalSlept = 0
 $maxTotal   = 120
@@ -283,6 +351,7 @@ $status     = $null
 while ($totalSlept -lt $maxTotal) {
     Start-Sleep -Seconds $delay
     $totalSlept += $delay
+    Write-Host -NoNewline '.'
     try {
         $runStatus = Invoke-RestMethod `
             -Uri "https://api.apify.com/v2/acts/$actorId/runs/$runId" `
@@ -294,6 +363,7 @@ while ($totalSlept -lt $maxTotal) {
     }
     if ($delay -lt 30) { $delay = [Math]::Min($delay * 2, 30) }
 }
+Write-Host ''  # newline after dots
 
 if ($status -ne 'SUCCEEDED') {
     Write-Error "Validation Actor run did not succeed (status: $status). Secrets file NOT written."
@@ -313,10 +383,27 @@ try {
 }
 
 $flagged = $false
-if ($items) {
-    $itemsJson = ($items | ConvertTo-Json -Depth 5 -Compress)
-    if ($itemsJson -match '(?i)(loginRequired|captcha|restricted|authwall|please[ _-]?log[ _-]?in)') {
-        $flagged = $true
+if ($items -is [array] -and $items.Count -gt 0) {
+    # M3 — check top-level keys / explicit fields only, NOT a free-form
+    # full-JSON substring match. The prior version matched against the entire
+    # serialized JSON, so any prospect whose company name contained the word
+    # "Restricted" (e.g. "Restricted Stock Plans LLC") or whose headline
+    # mentioned feeling "restricted" would false-positive and write the
+    # cookie-expired sentinel. Tighten to known auth-failure response shapes.
+    foreach ($i in $items) {
+        if ($i.loginRequired -eq $true) { $flagged = $true; break }
+        if ($i.captcha -eq $true)       { $flagged = $true; break }
+        if ($i.authwall -eq $true)      { $flagged = $true; break }
+        # Some Actors return a top-level error string. Match common phrasings,
+        # but only against $i.error / $i.message / $i.status — never the
+        # body data.
+        foreach ($field in @('error','message','status','reason')) {
+            $val = $i.$field
+            if ($val -and $val -match '(?i)(authwall|please[ _-]?log[ _-]?in|login required|captcha)') {
+                $flagged = $true; break
+            }
+        }
+        if ($flagged) { break }
     }
 }
 if ($flagged) {
@@ -348,22 +435,57 @@ if (-not [string]::IsNullOrWhiteSpace($rosterActorId)) {
 }
 
 $json = $secrets | ConvertTo-Json -Depth 5
-Set-Content -Path $secretsPath -Value $json -Encoding utf8 -NoNewline
 
-# Lock down file ACL: only current user
+# M6 — atomic ACL-first write. The prior version did:
+#   Set-Content (writes plaintext with default ACL)
+#   Set-Acl    (then locks down)
+# That leaves a brief window where the plaintext file is readable by other
+# local users. Defense-in-depth: create an empty file FIRST with the
+# restricted ACL, then write the content. Combined with the parent directory
+# ACL (already locked above), defense is sufficient even if Set-Acl on the
+# file fails for some reason.
+
+# Remove any pre-existing file so the new ACL applies cleanly.
+if (Test-Path $secretsPath) {
+    Remove-Item -Path $secretsPath -Force
+}
+
 try {
-    $acl = Get-Acl $secretsPath
-    $acl.SetAccessRuleProtection($true, $false)
-    foreach ($r in @($acl.Access)) { $acl.RemoveAccessRule($r) | Out-Null }
+    # Create empty file via .NET API so we can hand-craft a SecurityDescriptor
+    # before any content lands on disk.
+    $fileSecurity = New-Object System.Security.AccessControl.FileSecurity
+    $fileSecurity.SetAccessRuleProtection($true, $false)
     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
         "$env:USERDOMAIN\$env:USERNAME",
         'FullControl',
         'Allow')
-    $acl.SetAccessRule($rule)
-    Set-Acl -Path $secretsPath -AclObject $acl
+    $fileSecurity.SetAccessRule($rule)
+
+    # FileSecurity-aware constructor: empty file with restricted ACL atomically.
+    [System.IO.File]::Create($secretsPath).Close()
+    Set-Acl -Path $secretsPath -AclObject $fileSecurity
+
+    # Now write the actual content — file is already locked to current user.
+    Set-Content -Path $secretsPath -Value $json -Encoding utf8 -NoNewline
 } catch {
-    Write-Warning "Could not lock down ACL on ${secretsPath}: $($_.Exception.Message)"
-    Write-Warning 'Please verify file permissions manually.'
+    Write-Warning "Atomic ACL-first write failed: $($_.Exception.Message)"
+    Write-Warning "Falling back to write-then-lock (brief readability window)."
+    Set-Content -Path $secretsPath -Value $json -Encoding utf8 -NoNewline
+    try {
+        $acl = Get-Acl $secretsPath
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($r in @($acl.Access)) { $acl.RemoveAccessRule($r) | Out-Null }
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            "$env:USERDOMAIN\$env:USERNAME",
+            'FullControl',
+            'Allow')
+        $acl.SetAccessRule($rule)
+        Set-Acl -Path $secretsPath -AclObject $acl
+    } catch {
+        Write-Warning "Could not lock down ACL on ${secretsPath}: $($_.Exception.Message)"
+        Write-Warning 'Please verify file permissions manually.'
+        Write-Warning "Recovery: icacls `"$secretsPath`" /reset"
+    }
 }
 
 # --- Clear stale cookie-expired sentinel if present -------------------------

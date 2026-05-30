@@ -21,25 +21,29 @@ The chain has seven stages (daily-brief Mon-Fri 6am; sweeps + buying-group chain
 
 ## Scripts
 
-- **`scripts/install-schedule.ps1`** — registers three Windows Task Scheduler entries (Mon-only commercial sweep, Mon-only academic sweep, Sun–Fri intro-finder morning).
-- **`scripts/setup-secrets.ps1`** — captures Apify API token + Actor ID + the user's LinkedIn profile URL + `li_at` cookie. Validates ALL four against Apify in one round-trip (header auth; `/v2/users/me` for token, single Actor run against the user's own profile for Actor + cookie). Writes `~/.nightingale/secrets.json` (schema v2) with restricted ACL.
-- **`scripts/run-one-apify-call.ps1`** — per-target worker. Loads secrets, calls Apify Actor once via `Authorization: Bearer` header (token never in URL), polls, writes result JSON atomically via `.tmp` + `Move-Item`. Distinguishes `apify_actor_not_found` (404), `apify_rate_limited` (429), `cookie_expired` (auth-failure indicators in payload), and generic `apify_start_failed` / `apify_fetch_failed` statuses.
+- **`scripts/install-schedule.ps1`** — registers six Windows Task Scheduler entries (daily-brief, commercial sweep, academic sweep, intro-finder morning, gmail-resurfacer morning, hubspot-manager nightly).
+- **`scripts/setup-secrets.ps1`** — captures Apify API token + Actor ID + the user's LinkedIn profile URL + `li_at` cookie + optional company-roster Actor ID. Validates ALL four required values against Apify in one round-trip (header auth; `/v2/users/me` for token, single Actor run against the user's own profile for Actor + cookie). Writes `~/.nightingale/secrets.json` (schema v3) with restricted ACL via an atomic ACL-first write.
+- **`scripts/run-one-apify-call.ps1`** — per-target worker. Loads secrets, calls Apify Actor once via `Authorization: Bearer` header (token never in URL), polls, writes result JSON atomically via `.tmp` + `Move-Item`. Distinguishes `apify_actor_not_found` (HTTP 404), `apify_rate_limited` (HTTP 429), `cookie_expired` (top-level auth-failure indicators in payload only — never full-JSON substring match), and generic `apify_start_failed` / `apify_fetch_failed` statuses.
+- **`scripts/run-one-apify-company-roster.ps1`** — per-attendee Layer-B worker for daily-brief. Same conventions as the mutual-connections worker; reads the optional `apify_company_roster_actor_id` from secrets v3.
 
 ## Secrets file
 
-Lives at `%USERPROFILE%\.nightingale\secrets.json`, schema v2:
+Lives at `%USERPROFILE%\.nightingale\secrets.json`, schema v3:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "created_at": "...",
   "updated_at": "...",
   "apify_api_token": "...",
   "apify_actor_id": "...",
   "apify_validation_url": "https://linkedin.com/in/your-slug",
-  "linkedin_li_at": "..."
+  "linkedin_li_at": "...",
+  "apify_company_roster_actor_id": "..."
 }
 ```
+
+The last field is OPTIONAL — omitted entirely when the operator skips the Layer-B prompt at setup-secrets time. Its presence enables the daily-brief Layer-B persona-roster lookup via Apify; its absence makes daily-brief fall back to WebSearch.
 
 Restricted ACL set by setup-secrets.ps1 (only current user has access). The file lives outside the repo and cannot be git-add'd. The `.gitignore` excludes `.nightingale/` defense-in-depth.
 

@@ -153,18 +153,22 @@ try {
     $runId = $startResp.data.id
     if (-not $runId) { throw 'Apify did not return a run id' }
 } catch {
-    $msg = $_.Exception.Message
-    if ($msg -match '404') {
+    # L10 — prefer HTTP status code over message-string matching. Exception
+    # message text varies with PowerShell version, proxy interposition, and
+    # wrapping conventions; the .NET status code is reliable.
+    $statusCode = $null
+    try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
+    if ($statusCode -eq 404) {
         $base.status = 'apify_actor_not_found'
-        $base.error  = "Actor '$ActorId' not found in your Apify account. Verify in https://console.apify.com/actors and re-run scripts/setup-secrets.ps1 to update."
-    } elseif ($msg -match '429') {
+        $base.error  = "Actor '$ActorId' not found in your Apify account (HTTP 404). Verify in https://console.apify.com/actors and re-run scripts/setup-secrets.ps1 to update."
+    } elseif ($statusCode -eq 429) {
         $retryAfter = $null
         try { $retryAfter = $_.Exception.Response.Headers['Retry-After'] } catch {}
         $base.status = 'apify_rate_limited'
-        $base.error  = "Apify rate-limited (429). Retry-After: $retryAfter. Likely hit free-tier monthly quota; intros resume next cycle."
+        $base.error  = "Apify rate-limited (HTTP 429). Retry-After: $retryAfter. Likely hit free-tier monthly quota; intros resume next cycle."
     } else {
         $base.status = 'apify_start_failed'
-        $base.error  = "Could not start Apify run: $msg"
+        $base.error  = "Could not start Apify run (HTTP $statusCode): $($_.Exception.Message)"
     }
     Write-Result $base
     exit 0
@@ -186,10 +190,12 @@ while ($totalSlept -lt $maxTotal) {
         $status = $runStatus.data.status
         if ($status -in @('SUCCEEDED','FAILED','ABORTED','TIMED-OUT','TIMEOUT')) { break }
     } catch {
-        $msg = $_.Exception.Message
-        if ($msg -match '429') {
+        # L10 — status-code-based rate-limit detection.
+        $statusCode = $null
+        try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($statusCode -eq 429) {
             $base.status = 'apify_rate_limited'
-            $base.error  = "Apify rate-limited (429) mid-poll. Run $runId orphaned."
+            $base.error  = "Apify rate-limited (HTTP 429) mid-poll. Run $runId orphaned."
             Write-Result $base
             exit 0
         }
@@ -211,41 +217,57 @@ try {
         -Uri "https://api.apify.com/v2/acts/$ActorId/runs/$runId/dataset/items" `
         -Headers $headers -Method Get -TimeoutSec 30
 } catch {
-    $msg = $_.Exception.Message
-    if ($msg -match '429') {
+    $statusCode = $null
+    try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
+    if ($statusCode -eq 429) {
         $base.status = 'apify_rate_limited'
-        $base.error  = "Apify rate-limited (429) fetching dataset. Run $runId orphaned."
+        $base.error  = "Apify rate-limited (HTTP 429) fetching dataset. Run $runId orphaned."
     } else {
         $base.status = 'apify_fetch_failed'
-        $base.error  = "Could not fetch dataset items: $msg"
+        $base.error  = "Could not fetch dataset items (HTTP $statusCode): $($_.Exception.Message)"
     }
     Write-Result $base
     exit 0
 }
 
 # --- Detect cookie-expiry indicators in payload -----------------------------
+# M3 — top-level field check ONLY, not a full-JSON substring scan. The prior
+# version stringified each result and regex-matched against the whole blob,
+# which false-positives on legitimate prospect data containing words like
+# "restricted" (e.g. "Restricted Stock Plans LLC" or a headline "I help teams
+# who feel restricted by manual processes"). A single false-positive sets the
+# sentinel and breaks ALL subsequent intro-finder calls until setup-secrets
+# is re-run, so the cost of a false-positive is high.
 $flagged = $false
 if ($items -is [array] -and $items.Count -gt 0) {
     foreach ($i in $items) {
-        $iJson = ($i | ConvertTo-Json -Depth 4 -Compress)
-        if ($iJson -match '(?i)(loginRequired|captcha|restricted|authwall|please[ _-]?log[ _-]?in)') {
-            $flagged = $true
-            break
+        # Check known auth-failure response shapes explicitly.
+        if ($i.loginRequired -eq $true) { $flagged = $true; break }
+        if ($i.captcha -eq $true)       { $flagged = $true; break }
+        if ($i.authwall -eq $true)      { $flagged = $true; break }
+        # Top-level error / message / status / reason fields only.
+        foreach ($field in @('error','message','status','reason')) {
+            $val = $i.$field
+            if ($val -and $val -match '(?i)(authwall|please[ _-]?log[ _-]?in|login required|captcha|cookie expired|session expired|invalid cookie)') {
+                $flagged = $true; break
+            }
         }
+        if ($flagged) { break }
     }
 }
 
 if ($flagged) {
-    # Write sentinel files so subsequent calls / next morning short-circuit
+    # M4 — Set-Content -Value '' instead of New-Item -Force. New-Item -Force
+    # TRUNCATES any pre-existing file at the path. The sentinel path is
+    # carefully chosen but defense-in-depth: Set-Content writes only what we
+    # explicitly hand it (an empty string).
     try {
-        # Empty marker file: New-Item -Force is intentional here (idempotent;
-        # file content is meaningless, only its existence matters).
-        New-Item -ItemType File -Path $sentinelActive -Force | Out-Null
+        Set-Content -Path $sentinelActive -Value '' -Encoding utf8 -NoNewline
         $sentinelDir = Split-Path -Parent $sentinelToday
         if (-not (Test-Path $sentinelDir)) {
             New-Item -ItemType Directory -Path $sentinelDir -Force | Out-Null
         }
-        New-Item -ItemType File -Path $sentinelToday -Force | Out-Null
+        Set-Content -Path $sentinelToday -Value '' -Encoding utf8 -NoNewline
     } catch {
         # Best-effort; do not fail the result write.
     }
