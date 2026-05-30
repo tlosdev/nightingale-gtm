@@ -1,6 +1,6 @@
 # Ideal Client Persona — Nightingale (Academic / Research Institution)
 
-> **Status: v0 stub.** Drafted alongside the academic signal-watcher agent. Title sets and messaging language will be refined as the first weekly sweeps surface real prospects and discovery calls produce direct quotes. Sections marked **TBD** are placeholders Ben will validate from real call data.
+> **Status: v0 stub.** Drafted alongside the academic signal-watcher agent. Title sets and messaging language will be refined as the first weekly sweeps surface real prospects and discovery calls produce direct quotes. Sections marked **TBD** are placeholders to validate from real call data.
 
 ---
 
@@ -62,7 +62,7 @@ The PI does not sign contracts. Institutional research leadership does. Titles t
 | Chief Research Officer (CRO at larger AMCs) | Enterprise research strategy. |
 | Director, {Center Name} Cancer Center (and analogous disease-center directors) | Disease-specific institutional research; trial pipeline within the center. |
 
-**TBD:** Which specific title(s) actually hold contract-signing authority at Emory and Duke — the academic signal-watcher surfaces every match against this set, and Ben filters by what closes first. Tighten the list once 2–3 deals reveal the real decision-maker title.
+**TBD:** Which specific title(s) actually hold contract-signing authority at Emory and Duke — the academic signal-watcher surfaces every match against this set, and the operator filters by what closes first. Tighten the list once 2–3 deals reveal the real decision-maker title.
 
 ---
 
@@ -132,6 +132,6 @@ These mirror the commercial persona's conservative register but reframe the valu
 
 ## Hard Rules — Read Before Outreach
 
-1. This persona is **v0 / stub**. Do not generate cold outreach using this file until Ben validates the title set and messaging from at least 2 discovery calls.
+1. This persona is **v0 / stub**. Do not generate cold outreach using this file until the title set and messaging are validated from at least 2 discovery calls.
 2. The signal-watcher academic agent **does not generate outreach in v1** — it stops at the qualified-list. Outreach generation against this persona is explicitly out of scope until the persona is validated.
-3. PI identity comes free from NIH RePORTER and ClinicalTrials.gov. Buyer + Tech Gatekeeper identity requires Apollo or WebSearch lookup against the institution and uses the title list above as a broad regex (every match surfaces; Ben filters).
+3. PI identity comes free from NIH RePORTER and ClinicalTrials.gov. Buyer + Tech Gatekeeper identity requires Apollo or WebSearch lookup against the institution and uses the title list above as a broad regex (every match surfaces; the operator filters).

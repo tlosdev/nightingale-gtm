@@ -2,13 +2,14 @@
 
 ## What this repo is
 
-Five signal-first prospect-discovery agents for Nightingale's GTM motion, plus three Windows PowerShell scripts that register them with Windows Task Scheduler and capture the credentials the intro-finder stage needs. The repo is **Windows-only** as of 2026-05 — `.sh` parity was dropped to reduce maintenance surface.
+Six signal-first prospect-discovery agents for Nightingale's GTM motion, plus three Windows PowerShell scripts that register them with Windows Task Scheduler and capture the credentials the intro-finder stage needs. The repo is **Windows-only** as of 2026-05 — `.sh` parity was dropped to reduce maintenance surface.
 
-The chain has three stages:
+The chain has four stages (stages 1-3 chained Mon, stage 4 parallel Mon-Fri):
 
 1. **`signal-watcher-{commercial,academic}`** — Monday 7am sweeps. Six commercial / four academic public sources. Output: `~/Desktop/nightingale-signals/{side}/output/{side}-signals-{date}.md` (qualified-list markdown).
 2. **`buying-group-finder-{commercial,academic}`** — auto-chained from each sweep. WebSearch-driven contact discovery per role bucket. Output: `~/Desktop/nightingale-signals/{side}/buying-groups/output/buying-group-{date}.md`. Academic side additionally scrapes publicly-published institutional + personal emails. **No Apollo. No pattern-guessed emails.**
 3. **`intro-finder`** — runs daily Sun–Fri 7am. Pulls 1/5 of the active buying-group file per day; schedules per-target Windows Task Scheduler one-shots at randomized 8am–8pm times (min 30s gap); each one-shot invokes `scripts/run-one-apify-call.ps1` once. The next morning's delivery aggregates yesterday's results into `~/Desktop/nightingale-signals/{side}/intros/output/intros-{date}.md`. **No Apollo. No direct Apify calls from the agent — only the worker script touches Apify.**
+4. **`gmail-resurfacer`** — runs daily Mon–Fri 7am (parallel to intro-finder, NOT chained). Walks 12 months of Gmail history forward from a date cursor (catch-up mode), then switches to historyId diffs (steady-state mode). Scores every thread against both personas with a 5-component rubric (persona role match / company ICP / trial-stage signal / conversation health / cross-agent boost), surfaces top 5 contacts to re-engage today into `~/Desktop/nightingale-signals/resurfacer/output/resurfacer-{date}.md` with HubSpot state annotation. All output tagged `re-surfaced` (weak signal tier) by directive — existing relationships are intrinsically weaker than fresh signal-watcher triggers. **Read-only against Gmail, HubSpot, and Apollo. No drafts. No verbatim email body in output.**
 
 ## Personas
 
@@ -46,6 +47,8 @@ Restricted ACL set by setup-secrets.ps1 (only current user has access). The file
 - **Never put the Apify token in a URL query string.** Always use `-Headers @{Authorization = "Bearer $token"}` so the token does not leak into `Get-CimInstance Win32_Process` / process command-lines.
 - **Never log the LinkedIn `li_at` cookie value.** Only the worker script reads it; agents only check file existence.
 - **Never pattern-guess emails** (inherits from the 2026-05-06 5-bounce incident). Buying-group commercial emits no emails; academic emits only emails scraped verbatim from publicly-served pages.
+- **Re-surfacer output never quotes email body verbatim.** Last-contact summaries are paraphrased in ≤ 1 sentence. The output md sits on Desktop and may be screenshotted or shared — protecting contacts' privacy is non-negotiable.
+- **Re-surfacer is read-only against HubSpot, Apollo, and Gmail.** No Gmail drafts, no HubSpot create/update, no Apollo writes. Search/list/get only.
 - **Runtime artifacts live on the user's Desktop, never in the repo.** `~/Desktop/nightingale-signals/` is auto-created; `.gitignore` blocks it.
 - **Stale artifact cleanup is mandatory.** Intro-finder Step 0 sweeps `.cookie-expired-*` older than 7 days and `daily-results/{date}/` older than 30 days.
 - **Persona files are the ICP source of truth.** Agents re-read them every run — if qualification rules change, edit the persona, not the agent.
@@ -53,4 +56,4 @@ Restricted ACL set by setup-secrets.ps1 (only current user has access). The file
 
 ## When you're editing this repo
 
-If a user clones this repo and opens Claude Code from it, both their personal `~/.claude/CLAUDE.md` and THIS file load as context simultaneously. Keep this file's content generic and project-scoped, never personal — no `C:\Users\ben\...` paths, no Ben-specific GitHub accounts, no "commit and push" preferences.
+If a user clones this repo and opens Claude Code from it, both their personal `~/.claude/CLAUDE.md` and THIS file load as context simultaneously. Keep this file's content generic and project-scoped, never personal — no specific user-home paths, no individual-specific GitHub accounts, no per-operator "commit and push" preferences. This repo is shared across the Nightingale team.

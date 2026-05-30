@@ -132,7 +132,7 @@ Institution name normalization is more involved than for commercial — academic
 - Take the remaining root token(s) as the cluster key
 - Examples after normalization: `Emory University Hospital` → `emory`; `Duke University School of Medicine` → `duke`; `University of North Carolina at Chapel Hill` → `north carolina at chapel hill` (further collapse: drop `at chapel hill` → `north carolina`)
 
-The normalization is fuzzy by design. The output file shows the raw `institution_name` of the most-recent-fired signal so Ben can spot if two distinct entities got collapsed by mistake.
+The normalization is fuzzy by design. The output file shows the raw `institution_name` of the most-recent-fired signal so the operator can spot if two distinct entities got collapsed by mistake.
 
 Group fresh signals by normalized institution key.
 
@@ -173,7 +173,7 @@ For Strong-tier institutions only (Weak-tier skips this step to keep runs cheap)
 
 For each surfaced name+title, record `(name, title, role_bucket, source_url)` where `role_bucket` is `buyer` or `tech_gatekeeper`.
 
-**Surface every match.** Do not filter for "best fit" — Ben will manually mark which titles are noise vs signal in the first 1–2 runs, and the title list in `academic-persona.md` will tighten over time. False positives here are cheap; false negatives are expensive.
+**Surface every match.** Do not filter for "best fit" — the operator will manually mark which titles are noise vs signal in the first 1–2 runs, and the title list in `academic-persona.md` will tighten over time. False positives here are cheap; false negatives are expensive.
 
 If WebSearch returns no matches for a role at an institution, record `Not found` for that bucket. Do NOT substitute a different role.
 
@@ -302,7 +302,7 @@ This hand-off runs the contact discovery follow-up automatically — copying thr
 2. **Step 0 bootstrap is non-negotiable.**
 3. **No Apollo calls.** Academic-buyer / CISO identification uses WebSearch only. The Apollo dataset is commercial-org-skewed and the academic title set doesn't map cleanly.
 4. **Persona stub.** `academic-persona.md` is v0. Do not generate outreach from this agent — it stops at qualified-list. If/when outreach is added in a future iteration, persona validation must come first.
-5. **Surface every regex match.** False positives in Step 6 are cheap; false negatives lose deals. Ben tightens the title regex by editing `academic-persona.md` after the first 1–2 sweeps.
+5. **Surface every regex match.** False positives in Step 6 are cheap; false negatives lose deals. The operator tightens the title regex by editing `academic-persona.md` after the first 1–2 sweeps.
 6. **Idempotency.** Re-running on the same day produces no new signals. Output file is still written for audit.
 7. **No volume cap on raw scraping.**
 8. **Cross-agent boundary.** If a SBIR/STTR awardee is a clearly commercial company (no university affiliation flagged in the award), log it as `crossover — likely commercial, see signal-watcher-commercial` in the terminal summary and do not include it in the academic output. Conversely, if the commercial agent encounters an academic sponsor, it logs and skips — the two agents are partitioned by Lead Sponsor character.

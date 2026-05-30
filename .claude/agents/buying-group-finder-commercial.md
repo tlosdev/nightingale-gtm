@@ -112,7 +112,7 @@ Surface all matches.
 
 ### Fallback when LinkedIn-filtered search returns nothing
 
-If a query against `site:linkedin.com/in` returns zero hits for a bucket, retry once without the site filter (broader web search). Anything found in the fallback gets tagged `(source: open web)` in the output so Ben can see it wasn't from LinkedIn directly.
+If a query against `site:linkedin.com/in` returns zero hits for a bucket, retry once without the site filter (broader web search). Anything found in the fallback gets tagged `(source: open web)` in the output so the operator can see it wasn't from LinkedIn directly.
 
 ### Hard rule — no inference
 

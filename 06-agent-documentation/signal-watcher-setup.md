@@ -201,6 +201,7 @@ Every scheduled Monday sweep ends with a **Step 11 hand-off** that invokes the c
 | `.claude/agents/buying-group-finder-commercial.md` | Commercial contact discovery (auto-chained after the commercial sweep) |
 | `.claude/agents/buying-group-finder-academic.md` | Academic contact discovery + email scraping (auto-chained after the academic sweep) |
 | `.claude/agents/intro-finder.md` | Daily warm-intro discovery (Sun-Fri 7am). Consumes the active buying-group file, calls Apify per target via OS-scheduled one-shots, delivers each prior day's intros each morning. |
+| `.claude/agents/gmail-resurfacer.md` | Daily Gmail re-surfacer (Mon-Fri 7am). Walks 12 months of Gmail history forward from a cursor, scores threads against both personas, surfaces top 5 contacts to re-engage today with HubSpot state annotation. Read-only against Gmail/HubSpot/Apollo. No verbatim email body in output. |
 | `scripts/setup-secrets.ps1` | One-time per-machine setup. Prompts for Apify API token + Actor ID + your LinkedIn profile URL + `li_at` cookie. Validates all four against Apify in one round-trip. Writes `~/.nightingale/secrets.json` with restricted ACL. |
 | `scripts/run-one-apify-call.ps1` | Per-target worker invoked by a Windows Scheduled Task one-shot. Calls Apify Actor once via header auth, polls, writes result JSON atomically. Handles 404 / 429 / cookie-expiry as distinct statuses. |
 | `scripts/install-schedule.ps1` | Registers the three Windows Task Scheduler entries (Mon-only sweeps + Sun-Fri intro-finder). |
@@ -313,3 +314,107 @@ Read this before tuning anything:
 - No outreach generation. The intros file is the deliverable; the "Hey Bob, would you intro me to Jane?" message is manual.
 - No HubSpot push. Manual follow-up.
 - No backfill if the laptop is asleep during a queued fire time. The OS one-shot is skipped. Future runs may re-process via the 30-day gate window if needed.
+
+---
+
+## Gmail Re-Surfacer — daily Mon-Fri 7am
+
+The `gmail-resurfacer` agent is the fourth stage of the chain, parallel to intro-finder (not chained from it). Its job is to mine the warmest signal available — **people you've already talked to** — and surface 5 reconnect-worthy contacts each weekday morning.
+
+### Why it exists
+
+The signal-watcher → buying-group-finder → intro-finder chain finds NEW prospects from public sources. None of those agents looks at your own inbox. A 12-month Gmail history contains hundreds of past conversations with people whose company has since hit a trial-design signal, whose title matches an ICP role, or who asked questions Nightingale can answer better today than 12 months ago. The resurfacer reads that history, scores it against the personas, and presents 5 highest-value re-engagement leads per morning with an explicit "why this person, why now" justification.
+
+Per directive, every re-surfaced contact is labeled `re-surfaced` (= weak signal tier) because the existing-relationship premise itself is intrinsically weaker than a fresh signal-watcher trigger — but a re-surfaced contact whose company **also** fired a fresh trigger is exactly the highest-value lead in the funnel.
+
+### Two-phase cursor model
+
+Rather than starting at "now" and watching new mail, the cursor **starts 365 days ago and walks forward**. The earliest runs surface the most-forgotten contacts (highest latent value); by the time the cursor catches up to today, the agent switches to incremental "new mail" mode.
+
+- **Catch-up mode** — cursor is a date. Each daily run scans `[cursor, cursor + chunk_days]`, scores, picks top 5, advances cursor by `chunk_days`. Default `chunk_days = 12` clears the 365-day backlog in ~30 weekday runs (~6 calendar weeks).
+- **Steady-state mode** — cursor becomes a Gmail historyId. Each run scans threads with new activity since the last run. If fewer than 5 pass the bar, the agent backfills from a long-tail cache of previously-scored-but-not-surfaced threads.
+
+### Scoring rubric (0–100 composite)
+
+| Component | Max | Source |
+|---|---|---|
+| **Persona role match** | 30 | LLM judges contact's title from signature / Gmail Contacts / WebSearch against persona buckets (commercial Economic Buyer / Tech Gatekeeper / Champion; academic PI / Buyer / Tech Gatekeeper) |
+| **Company ICP match** | 20 | Sender domain → company → employee count 10-200 + bio/pharma/medical-device/CRO/academic-medical-center industry + US. Personal freemail → 0 + route to skip pile. |
+| **Trial-stage signal** | 25 | Heuristic regex for trial-language tokens + ClinicalTrials.gov cross-ref. Phase 1 completed within last 90 days OR Phase 2 in design/recruiting within last 180 days → +25. Historical language only → +10. |
+| **Conversation health** | 15 | LLM judges sentiment + recency. Healthy + cold > 90d → +15. Healthy + active < 30d → +0 (already in-flight). Terminal negative signal → entire thread scored to 0. |
+| **Cross-agent boost** | 10 | +10 if company is in latest signal-watcher output. If contact also appears in any active buying-group file, recommended-action overrides to "awareness only, do NOT recommend new outreach." |
+
+**Minimum surfacing threshold: 35.** Below 35, never surface — the bar stays high enough that 5 contacts/day stays signal-dense.
+
+### Cooldown + snooze
+
+- **60-day cooldown** — a contact surfaced today never re-appears for 60 days, regardless of score.
+- **Manual snooze** — trigger phrase `snooze {email} for {N} days` adds the contact to `state/snoozed.json`. `unsnooze {email}` removes them.
+- **Surface-count warning** — when `surface_count >= 3` for a contact, the terminal logs a soft warning suggesting snoozing or moving on. No automatic exclusion.
+
+### HubSpot annotation (read-only)
+
+For each surfaced contact, the agent queries HubSpot via `mcp__hubspot__hubspot-search-objects` and annotates:
+
+- Not present → recommended action `cold re-engage`.
+- Present, no deal → `warm re-engage; consider creating deal`.
+- Present, deal stage = X, last activity < 30 days → `⚠ active deal — do not double-contact`.
+- 30-89 days → `active but quiet — check with sales context`.
+- ≥ 90 days → `stale deal — re-engage worthwhile`.
+
+The agent never writes to HubSpot. Annotation is informational only.
+
+### Privacy rule
+
+**The output markdown NEVER quotes email body content verbatim.** The "Last contact" field is always a paraphrased ≤1-sentence summary. The Desktop markdown may be screenshotted or shared; protecting contacts' privacy and the operator's relationships is non-negotiable. Verbatim quoting indicates a prompt-failure and must be corrected.
+
+### Output paths
+
+```
+~/Desktop/nightingale-signals/resurfacer/
+├── state/
+│   ├── cursor.json              # mode + date or historyId, chunk_days, last run
+│   ├── surfaced-history.json    # 60-day cooldown + surface_count tracking
+│   ├── snoozed.json             # user-snoozed contacts with expiry
+│   └── scored-cache.json        # LRU-capped (5000 entries) for steady-state backfill
+└── output/
+    └── resurfacer-{date}.md     # delivered each weekday morning
+```
+
+### Cron entry
+
+After running `scripts/install-schedule.ps1`, you should see four Nightingale entries:
+
+```
+Nightingale-Commercial-Sweep             Monday 7am
+Nightingale-Academic-Sweep               Monday 7am
+Nightingale-Intro-Finder-Morning         Sun–Fri 7am
+Nightingale-Gmail-Resurfacer-Morning     Mon–Fri 7am
+```
+
+### Prerequisites
+
+The resurfacer requires the **Gmail MCP connector** authorized in Claude Code (Settings → Connectors → Gmail). If unauthorized at run time, the agent writes a `GMAIL_NOT_AUTHORIZED-{date}.md` notice + push and exits cleanly. The other three stages of the chain are unaffected.
+
+Optional but recommended connectors (graceful degradation if missing):
+- **HubSpot MCP** — for state annotation. If missing, every surfaced contact shows `HubSpot: not present` and may surface duplicate-effort risk if you already have them in HubSpot.
+- **Apollo MCP** — read-only enrichment for company ICP match when signature/Gmail-Contacts is insufficient.
+- **ClinicalTrials.gov MCP** — for the trial-stage fresh-trigger cross-ref. If missing, that component falls back to historical-only (+10) for any thread with trial-language tokens.
+
+### Trigger phrases
+
+- `gmail resurfacer daily morning` — full daily run (what cron invokes; fires push).
+- `RUN gmail resurfacer` / `re-surface my inbox` — manual run, no push.
+- `snooze {email} for {N} days` — adds contact to snooze list.
+- `unsnooze {email}` — removes contact from snooze list.
+- `resurfacer dry run from {ISO date}` — test scoring without advancing the persistent cursor.
+- `resurfacer reset cursor to {ISO date}` — explicit cursor rewind / fast-forward (confirms in terminal first).
+
+### What gmail-resurfacer does NOT do (v1)
+
+- No Gmail drafts created. No emails sent. The agent is fully read-only against Gmail.
+- No HubSpot writes. Read-only annotation only.
+- No Apollo writes. Read-only enrichment only when needed.
+- No verbatim email body in the output md. Paraphrase only.
+- No weekend runs. Mon-Fri only — matches a standard working week.
+- No ML / embedding clustering. Heuristic + LLM-judgment scoring only.
