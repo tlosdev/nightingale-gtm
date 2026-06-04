@@ -1,6 +1,6 @@
 # Nightingale UI
 
-Opt-in local control panel for the Nightingale GTM agent chain. Loopback-only Node.js + Express + React app that consumes the markdown/JSON files written by the agents to `~/Desktop/nightingale-signals/**` and provides a single-pane control surface — view today's brief, work through the HubSpot pending-approval queue, trigger agent runs on demand, and check connector / scheduled-task / secrets health.
+Opt-in local control panel for the Nightingale GTM agent chain. Loopback-only Node.js + Express + React app that consumes the markdown/JSON files written by the agents to `~/Desktop/nightingale-signals/**` and provides a single-pane control surface — view today's brief, work through the approval queues (HubSpot updates, Pitch Deck Edits, Investor Newsletter), trigger agent runs on demand, and check connector / scheduled-task / secrets health.
 
 The UI is **purely a renderer + thin action layer**. It does not write to HubSpot directly, does not store credentials, does not run on a schedule. Every action it takes is the same trigger phrase you could type into a terminal yourself (`claude -p "..."`). The agents remain the source of truth for everything; this is just a nicer way to look at and approve their output.
 
@@ -41,6 +41,8 @@ To stop: `Ctrl+C` in the terminal that runs the script.
 | `/` (Dashboard) | Today's brief at-a-glance, pending HubSpot counts, any unauthorized-MCP warnings, quick "Run now" buttons for each agent. |
 | `/brief` | Today's daily-brief rich-rendered: meetings expand to attendees + persona match + recent thread context + intro suggestions + talking points + HubSpot state. |
 | `/pending` | Full HubSpot pending queue, cross-day. Inline Apply / Reject per item; multi-select for bulk actions. Each action invokes `claude -p "apply hubspot updates N,N from DATE"` (or `reject ...`) via the local server. |
+| `/pitch-deck` | Pitch Deck Edits queue. Slide-by-slide before/after edits proposed by pitch-deck-updater; Apply / Reject per edit. Apply invokes `claude -p "apply pitch-deck updates N,N from DATE"` and appends approved edits to a Desktop hand-off doc (the Slides deck is never edited programmatically). |
+| `/newsletter` | Investor Newsletter review. Renders the biweekly update body + recipient roster; **Approve & create Gmail draft** invokes `claude -p "approve newsletter draft from DATE"`, which creates one unsent BCC Gmail draft (never sends). |
 | `/agents` | Control panel: one card per agent with scheduled-task status, last-run time, most recent output file, **Run now** button. |
 | `/signals/:side` | Latest commercial / academic signal-watcher sweep, buying groups, intros. |
 | `/resurfacer` | Top 5 contacts the re-surfacer surfaced today. |

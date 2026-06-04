@@ -38,12 +38,12 @@ export interface UndecidedPendingItem extends QueuedItem {
 
 /**
  * Build the set of pending_ids that have been decided (approved or rejected)
- * by reading approval-history.jsonl. Returns an empty set if the file
- * doesn't exist.
+ * by reading a queue's approval-history.jsonl. Returns an empty set if the
+ * file doesn't exist.
  */
-function loadDecidedIds(): Set<string> {
+function loadDecidedIds(subdir: string): Set<string> {
   const decided = new Set<string>();
-  const historyPath = path.join(PATHS.hubspotManager, 'state', 'approval-history.jsonl');
+  const historyPath = path.join(subdir, 'state', 'approval-history.jsonl');
   if (!fs.existsSync(historyPath)) return decided;
   const content = fs.readFileSync(historyPath, 'utf8');
   for (const line of content.split(/\r?\n/)) {
@@ -58,11 +58,13 @@ function loadDecidedIds(): Set<string> {
   return decided;
 }
 
-// Single-entry mtime-keyed cache. The Layout component re-fetches pending on
-// every nav, which would otherwise re-read every pending file + the entire
-// approval-history.jsonl per request. Cache key = sum of (pending-dir mtime +
-// history-file mtime). Invalidated automatically when either changes.
-let cache: { key: string; value: UndecidedPendingItem[] } | null = null;
+// Per-queue single-entry mtime-keyed cache. The Layout component re-fetches
+// pending on every nav, which would otherwise re-read every pending file + the
+// entire approval-history.jsonl per request. Cache key = sum of (pending-dir
+// mtime + history-file mtime). Invalidated automatically when either changes.
+// Keyed by queue subdir so multiple queues (hubspot / pitch-deck / newsletter)
+// don't evict each other.
+const caches = new Map<string, { key: string; value: UndecidedPendingItem[] }>();
 
 function buildCacheKey(pendingDir: string, historyPath: string): string {
   let pendingMtime = 0;
@@ -73,20 +75,24 @@ function buildCacheKey(pendingDir: string, historyPath: string): string {
 }
 
 /**
- * Read every non-archived pending/*.json, filter out decided items, and
- * return the flat list. Sorted by run_date desc, then pending_id asc.
+ * Read every non-archived pending/*.json under a queue subdir, filter out
+ * decided items, and return the flat list. Sorted by run_date desc, then
+ * pending_id asc. Generic over the queue's Desktop subfolder so the same
+ * loader serves hubspot-manager, pitch-deck-updater, and investor-newsletter.
  */
-export function loadAllUndecidedPending(): UndecidedPendingItem[] {
-  const pendingDir = path.join(PATHS.hubspotManager, 'pending');
-  const historyPath = path.join(PATHS.hubspotManager, 'state', 'approval-history.jsonl');
+export function loadUndecidedForQueue(subdir: string): UndecidedPendingItem[] {
+  const pendingDir = path.join(subdir, 'pending');
+  const historyPath = path.join(subdir, 'state', 'approval-history.jsonl');
   const key = buildCacheKey(pendingDir, historyPath);
-  if (cache && cache.key === key) return cache.value;
+  const cached = caches.get(subdir);
+  if (cached && cached.key === key) return cached.value;
   if (!fs.existsSync(pendingDir)) {
-    cache = { key, value: [] };
-    return cache.value;
+    const empty = { key, value: [] as UndecidedPendingItem[] };
+    caches.set(subdir, empty);
+    return empty.value;
   }
 
-  const decided = loadDecidedIds();
+  const decided = loadDecidedIds(subdir);
   const undecided: UndecidedPendingItem[] = [];
 
   for (const name of fs.readdirSync(pendingDir)) {
@@ -115,8 +121,16 @@ export function loadAllUndecidedPending(): UndecidedPendingItem[] {
     return a.pending_id.localeCompare(b.pending_id);
   });
 
-  cache = { key, value: undecided };
+  caches.set(subdir, { key, value: undecided });
   return undecided;
+}
+
+/**
+ * Back-compat wrapper: the original HubSpot-only loader. The /api/pending
+ * route + the Layout pending badge still call this unchanged.
+ */
+export function loadAllUndecidedPending(): UndecidedPendingItem[] {
+  return loadUndecidedForQueue(PATHS.hubspotManager);
 }
 
 /**

@@ -35,11 +35,26 @@ export const ALLOWED_TRIGGER_PATTERNS: ReadonlyArray<RegExp> = [
   /^WEEKLY feedback insights$/,
   /^list pending hubspot updates$/,
 
+  // === Investor-side loop (investor-analyzer / pitch-deck-updater / newsletter) ===
+  /^RUN investor-analyzer$/,
+  /^ANALYZE investor feedback$/,
+  /^WEEKLY investor insights$/,
+  /^RUN pitch-deck-updater$/,
+  /^update pitch deck$/,
+  /^RUN investor-newsletter$/,
+  /^compose investor newsletter$/,
+
   // === Apply / reject — strict numeric ID lists + ISO date ===
   // `pending_ids` are constructed server-side from validated integers; this
   // regex re-validates the constructed phrase as defense-in-depth.
   /^apply hubspot updates (all|\d+(,\d+)*) from \d{4}-\d{2}-\d{2}$/,
   /^reject hubspot updates (all|\d+(,\d+)*) from \d{4}-\d{2}-\d{2}$/,
+  /^apply pitch-deck updates (all|\d+(,\d+)*) from \d{4}-\d{2}-\d{2}$/,
+  /^reject pitch-deck updates (all|\d+(,\d+)*) from \d{4}-\d{2}-\d{2}$/,
+
+  // === Newsletter decision — single-item queue, no id list ===
+  /^approve newsletter draft from \d{4}-\d{2}-\d{2}$/,
+  /^reject newsletter draft from \d{4}-\d{2}-\d{2}$/,
 ];
 
 export function isPhraseAllowed(phrase: string): boolean {
@@ -57,8 +72,8 @@ export function isPhraseAllowed(phrase: string): boolean {
 }
 
 /**
- * Friendly names for the 7 agents, used to validate `/api/agents/run` requests.
- * Each maps to the canonical trigger phrase the cron uses.
+ * Friendly names for the agents, used to validate `/api/agents/run` requests.
+ * Each maps to the canonical trigger phrase the cron (or chain) uses.
  */
 export const AGENT_TRIGGERS: Readonly<Record<string, string>> = {
   'daily-brief': 'daily brief morning',
@@ -68,6 +83,9 @@ export const AGENT_TRIGGERS: Readonly<Record<string, string>> = {
   'gmail-resurfacer': 'gmail resurfacer daily morning',
   'hubspot-manager': 'nightly hubspot manage',
   'feedback-analyzer': 'ANALYZE feedback',
+  'investor-analyzer': 'RUN investor-analyzer',
+  'pitch-deck-updater': 'RUN pitch-deck-updater',
+  'investor-newsletter': 'RUN investor-newsletter',
 };
 
 export type AgentName = keyof typeof AGENT_TRIGGERS;

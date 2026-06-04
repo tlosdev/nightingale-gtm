@@ -7,6 +7,8 @@ const NAV = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/brief', label: "Today's Brief" },
   { to: '/pending', label: 'Pending Approvals', badge: true },
+  { to: '/pitch-deck', label: 'Pitch Deck Edits' },
+  { to: '/newsletter', label: 'Investor Newsletter' },
   { to: '/agents', label: 'Agents' },
   { to: '/signals/commercial', label: 'Signals' },
   { to: '/resurfacer', label: 'Re-surfacer' },
@@ -39,7 +41,7 @@ export function Layout() {
               }
             >
               <span>{item.label}</span>
-              {item.badge && pendingCount > 0 && (
+              {'badge' in item && item.badge && pendingCount > 0 && (
                 <span className="text-xs bg-amber-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.25rem] text-center">
                   {pendingCount}
                 </span>

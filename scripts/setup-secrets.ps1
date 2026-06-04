@@ -3,9 +3,10 @@
     Captures the user's Apify API token, Apify Actor ID (mutual-connections),
     LinkedIn profile URL (for validation), LinkedIn li_at cookie, and an
     OPTIONAL second Apify Actor ID for LinkedIn-company-employees scraping
-    (powers the daily-brief Layer-B persona-roster lookup). Validates all
-    REQUIRED fields against Apify in one round-trip, then writes
-    ~/.nightingale/secrets.json (schema v3) with a restricted ACL.
+    (powers the daily-brief Layer-B persona-roster lookup), and an OPTIONAL
+    pitch-deck Google Drive pointer (powers the pitch-deck-updater agent).
+    Validates all REQUIRED fields against Apify in one round-trip, then writes
+    ~/.nightingale/secrets.json (schema v4) with a restricted ACL.
 
 .DESCRIPTION
     One-time per-user setup for the intro-finder + daily-brief agents. Re-run
@@ -117,6 +118,9 @@ if (Test-Path $secretsPath) {
         if ($existing.schema_version -lt 3) {
             Write-Host "Schema v2 -> v3 upgrade: optional prompt for apify_company_roster_actor_id (powers daily-brief Layer-B)."
         }
+        if ($existing.schema_version -lt 4) {
+            Write-Host "Schema v3 -> v4 upgrade: optional prompt for pitch_deck_drive_file_id (powers pitch-deck-updater)."
+        }
     } catch {
         Write-Warning "Existing secrets file is unreadable ($($_.Exception.Message)); will overwrite."
         $existing = $null
@@ -142,6 +146,7 @@ $promptActor        = $true
 $promptValidationUrl = $true
 $promptLiAt         = $true
 $promptRosterActor  = $true
+$promptDeckPointer  = $true
 
 if ($existing) {
     if ($existing.apify_api_token) {
@@ -169,6 +174,12 @@ if ($existing) {
         $promptRosterActor = ($resp -match '^[Yy]')
     } else {
         Write-Host "No apify_company_roster_actor_id on file (v2 secrets); will offer optional prompt."
+    }
+    if ($existing.pitch_deck_drive_file_id) {
+        $resp = Read-Host "Overwrite existing pitch_deck_drive_file_id (pitch-deck-updater)? [y/N]"
+        $promptDeckPointer = ($resp -match '^[Yy]')
+    } else {
+        Write-Host "No pitch_deck_drive_file_id on file (pre-v4 secrets); will offer optional prompt."
     }
 }
 
@@ -283,6 +294,49 @@ if ($promptRosterActor) {
         $rosterActorId = $rosterInput
         Write-Host 'Company-roster Actor ID recorded. Not validated at setup time to avoid'
         Write-Host 'extra Apify spend; first daily-brief Layer-B call will surface any issue.'
+    }
+}
+
+# --- Prompt: Pitch-deck Google Drive pointer (OPTIONAL — pitch-deck-updater) --
+# Accepts a raw Drive file ID or a full share URL; we extract the ID from a URL.
+# Not validated at setup time (avoids requiring Drive MCP auth here); the
+# pitch-deck-updater agent surfaces a DECK_POINTER_MISSING / DRIVE_NOT_AUTHORIZED
+# notice on first run if anything is off.
+$deckFileId  = if ($existing) { $existing.pitch_deck_drive_file_id } else { $null }
+$deckUrl     = if ($existing) { $existing.pitch_deck_drive_url } else { $null }
+if ($promptDeckPointer) {
+    Write-Host ''
+    Write-Host 'OPTIONAL — Pitch deck Google Drive pointer (Google Slides)'
+    Write-Host '---'
+    Write-Host 'Powers the pitch-deck-updater agent, which reads your deck READ-ONLY and'
+    Write-Host 'proposes slide-by-slide edits to the dashboard for your approval. It NEVER'
+    Write-Host 'edits the deck itself.'
+    Write-Host ''
+    Write-Host 'Paste either the Drive file ID or the full share URL, e.g.:'
+    Write-Host '  https://docs.google.com/presentation/d/1AbCdEfGhIjK.../edit'
+    Write-Host '  (or just the 1AbCdEfGhIjK... part)'
+    Write-Host ''
+    Write-Host 'Leave blank to skip — the weekly chain will write a DECK_POINTER_MISSING notice.'
+    Write-Host ''
+    $deckInput = (Read-Host 'Pitch deck Drive file ID or URL (or press Enter to skip)').Trim()
+    if ([string]::IsNullOrWhiteSpace($deckInput)) {
+        $deckFileId = $null
+        $deckUrl    = $null
+        Write-Host 'Skipped. pitch-deck-updater will write a DECK_POINTER_MISSING notice until set.'
+    } else {
+        # Extract the file ID from a presentation/document/file URL if a URL was pasted.
+        if ($deckInput -match '/d/([a-zA-Z0-9_-]+)') {
+            $deckFileId = $Matches[1]
+            $deckUrl    = $deckInput
+        } elseif ($deckInput -match '[?&]id=([a-zA-Z0-9_-]+)') {
+            $deckFileId = $Matches[1]
+            $deckUrl    = $deckInput
+        } else {
+            # Treat the whole input as a raw file ID.
+            $deckFileId = $deckInput
+            $deckUrl    = $null
+        }
+        Write-Host "Pitch deck pointer recorded (file ID: $deckFileId). Not validated at setup time."
     }
 }
 
@@ -414,12 +468,12 @@ if ($flagged) {
 }
 Write-Host 'Cookie + Actor validation OK.'
 
-# --- Write secrets.json (schema v3) -----------------------------------------
+# --- Write secrets.json (schema v4) -----------------------------------------
 $createdAt = if ($existing -and $existing.created_at) { $existing.created_at } else { (Get-Date -Format 'yyyy-MM-dd') }
 $updatedAt = (Get-Date -Format 'yyyy-MM-dd')
 
 $secrets = [ordered]@{
-    schema_version       = 3
+    schema_version       = 4
     created_at           = $createdAt
     updated_at           = $updatedAt
     apify_api_token      = $apifyToken
@@ -432,6 +486,15 @@ $secrets = [ordered]@{
 # layer_b_actor_configured probe correct and avoids ambiguous empty-vs-missing.
 if (-not [string]::IsNullOrWhiteSpace($rosterActorId)) {
     $secrets['apify_company_roster_actor_id'] = $rosterActorId
+}
+# Only include the pitch-deck pointer when the operator provided one. Same
+# omit-when-empty discipline so pitch-deck-updater's "is a deck configured"
+# probe stays unambiguous.
+if (-not [string]::IsNullOrWhiteSpace($deckFileId)) {
+    $secrets['pitch_deck_drive_file_id'] = $deckFileId
+    if (-not [string]::IsNullOrWhiteSpace($deckUrl)) {
+        $secrets['pitch_deck_drive_url'] = $deckUrl
+    }
 }
 
 $json = $secrets | ConvertTo-Json -Depth 5
@@ -496,10 +559,15 @@ if (Test-Path $sentinel) {
 }
 
 Write-Host ''
-Write-Host "Done. Secrets written to: $secretsPath  (schema v3)"
+Write-Host "Done. Secrets written to: $secretsPath  (schema v4)"
 Write-Host 'Next intro-finder run (Sun-Thu 7am) will use these credentials.'
 if (-not [string]::IsNullOrWhiteSpace($rosterActorId)) {
     Write-Host 'Daily-brief Layer-B will use the configured company-roster Actor.'
 } else {
     Write-Host 'Daily-brief Layer-B will use the WebSearch fallback path.'
+}
+if (-not [string]::IsNullOrWhiteSpace($deckFileId)) {
+    Write-Host 'pitch-deck-updater will read the configured Google Drive deck (read-only).'
+} else {
+    Write-Host 'pitch-deck-updater has no deck pointer; it will write a DECK_POINTER_MISSING notice until set.'
 }

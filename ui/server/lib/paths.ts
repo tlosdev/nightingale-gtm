@@ -19,6 +19,10 @@ export const PATHS = {
   resurfacer: path.join(SIGNALS_ROOT, 'resurfacer'),
   feedbackInsights: path.join(SIGNALS_ROOT, 'feedback-insights'),
   hubspotManager: path.join(SIGNALS_ROOT, 'hubspot-manager'),
+  // Investor-side loop (investor-analyzer / pitch-deck-updater / investor-newsletter).
+  investorInsights: path.join(SIGNALS_ROOT, 'investor-insights'),
+  pitchDeck: path.join(SIGNALS_ROOT, 'pitch-deck'),
+  investorNewsletter: path.join(SIGNALS_ROOT, 'investor-newsletter'),
 } as const;
 
 /**

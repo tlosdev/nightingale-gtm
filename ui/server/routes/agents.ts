@@ -28,6 +28,9 @@ const AGENT_TO_TASK: Record<AgentName, string | null> = {
   'gmail-resurfacer': 'Nightingale-Gmail-Resurfacer-Morning',
   'hubspot-manager': 'Nightingale-HubSpot-Manager-Nightly',
   'feedback-analyzer': null, // on-demand, no scheduled task
+  'investor-analyzer': 'Nightingale-Investor-Analyzer-Weekly',
+  'pitch-deck-updater': null, // chained off investor-analyzer, no scheduled task
+  'investor-newsletter': 'Nightingale-Investor-Newsletter-Biweekly',
 };
 
 function latestOutputFor(agent: AgentName): { path: string; mtime: number } | null {
@@ -52,6 +55,14 @@ function latestOutputFor(agent: AgentName): { path: string; mtime: number } | nu
       return latestFileMatching(path.join(PATHS.hubspotManager, 'output'), /^run-\d{4}-\d{2}-\d{2}\.md$/);
     case 'feedback-analyzer':
       return latestFileMatching(path.join(PATHS.feedbackInsights, 'output'), /^refinement-\d{4}-\d{2}-\d{2}\.md$/);
+    case 'investor-analyzer':
+      return latestFileMatching(path.join(PATHS.investorInsights, 'output'), /^refinement-\d{4}-\d{2}-\d{2}\.md$/);
+    case 'pitch-deck-updater':
+      return latestFileMatching(path.join(PATHS.pitchDeck, 'output'), /^proposed-edits-\d{4}-\d{2}-\d{2}\.md$/);
+    case 'investor-newsletter':
+      return latestFileMatching(path.join(PATHS.investorNewsletter, 'output'), /^newsletter-\d{4}-\d{2}-\d{2}\.md$/);
+    default:
+      return null;
   }
 }
 
@@ -92,6 +103,10 @@ const AGENT_TIMEOUT_MS: Record<AgentName, number> = {
   'gmail-resurfacer': 10 * 60 * 1000,
   'feedback-analyzer': 10 * 60 * 1000,
   'daily-brief': 5 * 60 * 1000,
+  // investor-analyzer chains pitch-deck-updater (Drive read + deck parse), so give it headroom.
+  'investor-analyzer': 15 * 60 * 1000,
+  'pitch-deck-updater': 10 * 60 * 1000,
+  'investor-newsletter': 10 * 60 * 1000,
 };
 
 agentsRouter.post('/run', async (req, res) => {

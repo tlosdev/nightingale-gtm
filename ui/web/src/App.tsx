@@ -3,6 +3,8 @@ import { Layout } from './components/Layout';
 import Dashboard from './routes/Dashboard';
 import BriefView from './routes/BriefView';
 import PendingQueueView from './routes/PendingQueueView';
+import PitchDeckQueueView from './routes/PitchDeckQueueView';
+import NewsletterReviewView from './routes/NewsletterReviewView';
 import AgentsControlPanel from './routes/AgentsControlPanel';
 import SignalsView from './routes/SignalsView';
 import ResurfacerView from './routes/ResurfacerView';
@@ -16,6 +18,8 @@ export default function App() {
         <Route index element={<Dashboard />} />
         <Route path="brief" element={<BriefView />} />
         <Route path="pending" element={<PendingQueueView />} />
+        <Route path="pitch-deck" element={<PitchDeckQueueView />} />
+        <Route path="newsletter" element={<NewsletterReviewView />} />
         <Route path="agents" element={<AgentsControlPanel />} />
         <Route path="signals" element={<Navigate to="/signals/commercial" replace />} />
         <Route path="signals/:side" element={<SignalsView />} />

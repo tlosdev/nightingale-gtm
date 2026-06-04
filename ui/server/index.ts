@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { SIGNALS_ROOT, repoRoot } from './lib/paths.js';
 import { briefRouter } from './routes/brief.js';
 import { pendingRouter } from './routes/pending.js';
+import { queuesRouter } from './routes/queues.js';
 import { signalsRouter } from './routes/signals.js';
 import { resurfacerRouter } from './routes/resurfacer.js';
 import { feedbackRouter } from './routes/feedback.js';
@@ -98,6 +99,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/brief', briefRouter);
 app.use('/api/pending', pendingRouter);
 app.use('/api/hubspot', pendingRouter); // alias: /api/hubspot/apply + /api/hubspot/reject
+app.use('/api/queues', queuesRouter);   // generic approval queues: hubspot / pitch-deck / newsletter
 app.use('/api/signals', signalsRouter);
 app.use('/api/buying-groups', signalsRouter); // legacy alias if frontend uses it
 app.use('/api/intros', signalsRouter); // legacy alias

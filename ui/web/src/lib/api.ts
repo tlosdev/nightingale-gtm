@@ -77,6 +77,18 @@ export interface PendingResp {
   };
 }
 
+export type QueueName = 'hubspot' | 'pitch-deck' | 'newsletter';
+
+export interface QueueResp {
+  queue: QueueName;
+  pending: PendingItem[];
+  counts: {
+    total: number;
+    by_day: Record<string, number>;
+    by_action_type: Record<string, number>;
+  };
+}
+
 export interface ActionResp {
   phrase: string;
   ok: boolean;
@@ -156,6 +168,20 @@ export const api = {
     request<ActionResp>('/api/pending/reject', {
       method: 'POST',
       body: JSON.stringify({ pending_ids, run_date }),
+    }),
+
+  // Generic approval queues (pitch-deck, newsletter — and hubspot via the same
+  // loader). `pending_ids` is omitted for single-item queues (newsletter).
+  queue: (name: QueueName) => request<QueueResp>(`/api/queues/${name}`),
+  queueApply: (name: QueueName, run_date: string, pending_ids?: number[] | 'all') =>
+    request<ActionResp>(`/api/queues/${name}/apply`, {
+      method: 'POST',
+      body: JSON.stringify(pending_ids === undefined ? { run_date } : { pending_ids, run_date }),
+    }),
+  queueReject: (name: QueueName, run_date: string, pending_ids?: number[] | 'all') =>
+    request<ActionResp>(`/api/queues/${name}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(pending_ids === undefined ? { run_date } : { pending_ids, run_date }),
     }),
 
   signalsLatest: (side: 'commercial' | 'academic') =>
