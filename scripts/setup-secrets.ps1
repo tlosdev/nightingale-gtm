@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Captures the user's Apify API token, Apify Actor ID (mutual-connections),
     LinkedIn profile URL (for validation), LinkedIn li_at cookie, and an
@@ -176,6 +176,7 @@ if ($existing) {
         Write-Host "No apify_company_roster_actor_id on file (v2 secrets); will offer optional prompt."
     }
     if ($existing.pitch_deck_drive_file_id) {
+        Write-Host "Current pitch_deck_drive_file_id: $($existing.pitch_deck_drive_file_id)"
         $resp = Read-Host "Overwrite existing pitch_deck_drive_file_id (pitch-deck-updater)? [y/N]"
         $promptDeckPointer = ($resp -match '^[Yy]')
     } else {
@@ -236,9 +237,9 @@ if ($promptValidationUrl) {
     }
     # U17 — validate the URL is a LinkedIn profile, not someone else's URL
     # or a malformed string. Catches typos before the Apify spend happens.
-    if ($validationUrl -notmatch '^https?://([a-z]{2,3}\.)?linkedin\.com/in/[^/\s?#]+/?$') {
+    if ($validationUrl -notmatch '^https?://([a-z0-9-]+\.)*linkedin\.[a-z.]{2,6}/in/[^/\s?#]+/?$') {
         Write-Error "validation URL does not look like a LinkedIn profile."
-        Write-Error "Expected format: https://linkedin.com/in/{your-slug}"
+        Write-Error "Expected format: https://linkedin.com/in/{your-slug} (ccTLDs like linkedin.co.uk also accepted)"
         Write-Error "Got: $validationUrl"
         Write-Error "Aborting before we burn Apify credit on the wrong target."
         exit 1
@@ -325,10 +326,13 @@ if ($promptDeckPointer) {
         Write-Host 'Skipped. pitch-deck-updater will write a DECK_POINTER_MISSING notice until set.'
     } else {
         # Extract the file ID from a presentation/document/file URL if a URL was pasted.
-        if ($deckInput -match '/d/([a-zA-Z0-9_-]+)') {
+        # Anchor the capture so it stops at the next '/', '?', or '#' — otherwise a
+        # trailing path segment or query string (e.g. /d/ID/edit?usp=sharing) would be
+        # swallowed into the ID and silently rejected by the agent on first run.
+        if ($deckInput -match '/d/([a-zA-Z0-9_-]+)(?=[/?#]|$)') {
             $deckFileId = $Matches[1]
             $deckUrl    = $deckInput
-        } elseif ($deckInput -match '[?&]id=([a-zA-Z0-9_-]+)') {
+        } elseif ($deckInput -match '[?&]id=([a-zA-Z0-9_-]+)(?=[&#]|$)') {
             $deckFileId = $Matches[1]
             $deckUrl    = $deckInput
         } else {

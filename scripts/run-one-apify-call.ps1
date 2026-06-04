@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Performs a single Apify-driven LinkedIn mutual-connections lookup for one target,
     and writes the result JSON to disk. Invoked by an OS one-shot task scheduled by

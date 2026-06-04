@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Performs a single Apify-driven LinkedIn company-employees lookup for one
     company, filters the result client-side to persona-matching titles, and

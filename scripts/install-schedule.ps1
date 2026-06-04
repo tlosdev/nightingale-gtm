@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Registers Windows Task Scheduler entries that drive the Nightingale agent chain.
 

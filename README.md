@@ -100,7 +100,10 @@ That's it. Step 2 registers **six** Windows Task Scheduler entries. Step 3 is op
 | `Nightingale-Intro-Finder-Morning`       | Sun–Fri 7am local        | Intro-finder: delivery (Mon–Fri) + queue (Sun–Thu) |
 | `Nightingale-Gmail-Resurfacer-Morning`   | Mon–Fri 7am local        | Gmail re-surfacer: walks 12-month inbox history, surfaces top 5 contacts to re-engage today |
 | `Nightingale-HubSpot-Manager-Nightly`    | Mon–Sun 11pm local       | Reads last 24h of Granola transcripts + Gmail replies, auto-applies ≤20 low-risk HubSpot writes, queues everything else for next-morning approval |
+| `Nightingale-Investor-Analyzer-Weekly`   | Monday 8am local         | Investor-persona refinement from investor call transcripts + investor email replies (propose-only diffs to `01-personas/investor-persona.md`). Auto-chains pitch-deck-updater. |
+| `Nightingale-Investor-Newsletter-Biweekly` | Every other Fri 9am local | Summarizes HubSpot changes since the last newsletter + internal-team transcripts into an investor update; on approval creates one unsent BCC Gmail draft (never sends). |
 | `feedback-analyzer` *(no scheduled task)* | Manual / on-demand       | Reads last 7 days of Granola transcripts + Gmail replies, emits propose-only persona refinement diffs. Trigger via `RUN feedback-analyzer` or wire up your own weekly cron entry. |
+| `pitch-deck-updater` *(no scheduled task)* | Chained off investor-analyzer | Reads the Google Slides deck read-only (pointer = `pitch_deck_drive_file_id`), proposes slide edits to the dashboard's **Pitch Deck Edits** queue. Never edits the deck. |
 
 The intro-finder's queue phase additionally registers per-target Windows Task Scheduler one-shots that fire at randomized times between 8am and 8pm on the same day, with a minimum 30-second gap between any two fires. These one-shots auto-delete 2 hours after they run.
 
@@ -137,8 +140,9 @@ The `nightingale-signals\` folder is created automatically on the first run.
 
 - `intro-finder` needs Apify + a LinkedIn `li_at` cookie (set up via `scripts/setup-secrets.ps1`).
 - `gmail-resurfacer` needs the Gmail MCP connector authorized in Claude Code (Settings → Connectors → Gmail). Optionally also authorize the HubSpot + Apollo + ClinicalTrials.gov MCP connectors for richer scoring and annotation.
-- `daily-brief` needs the Google Calendar MCP connector authorized in Claude Code (Settings → Connectors → Google Calendar). Optionally: Gmail MCP for attendee identity resolution + recent thread context, HubSpot MCP for state annotation, Apollo MCP for company enrichment, ClinicalTrials.gov MCP for trial-design-window cross-ref, and a second optional Apify Actor (`apify_company_roster_actor_id`, set via `scripts/setup-secrets.ps1` schema v3) for richer Layer-B persona-roster intros. Without the Layer-B Actor, daily-brief falls back to WebSearch automatically.
+- `daily-brief` needs the Google Calendar MCP connector authorized in Claude Code (Settings → Connectors → Google Calendar). Optionally: Gmail MCP for attendee identity resolution + recent thread context, HubSpot MCP for state annotation, Apollo MCP for company enrichment, ClinicalTrials.gov MCP for trial-design-window cross-ref, and a second optional Apify Actor (`apify_company_roster_actor_id`, set via `scripts/setup-secrets.ps1` schema v4) for richer Layer-B persona-roster intros. Without the Layer-B Actor, daily-brief falls back to WebSearch automatically.
 - `hubspot-manager` REQUIRES the HubSpot MCP connector authorized in Claude Code (Settings → Connectors → HubSpot). See [HubSpot MCP authorization](#hubspot-mcp-authorization) below for the OAuth walkthrough. Without it, every nightly run writes a `HUBSPOT_NOT_AUTHORIZED-{date}.md` notice on your Desktop with step-by-step setup instructions and exits cleanly.
+- **Investor loop** (`investor-analyzer` → `pitch-deck-updater` → `investor-newsletter`): reads the same Google Drive transcripts folder + Gmail (read-only) and, for the deck, the optional `pitch_deck_drive_file_id` Google Slides pointer (set via `scripts/setup-secrets.ps1` schema v4). `pitch-deck-updater` proposes slide edits and `investor-newsletter` drafts the biweekly update into the dashboard's **Pitch Deck Edits** and **Investor Newsletter** approval queues — both propose-only (the deck is never edited; the newsletter is only ever an unsent BCC Gmail draft). Without a deck pointer, pitch-deck-updater writes a `DECK_POINTER_MISSING-{date}.md` notice and skips. Per-agent setup: `06-agent-documentation/investor-analyzer-usage.md`, `pitch-deck-updater-usage.md`, `investor-newsletter-usage.md`.
 
 Without those:
 
@@ -318,7 +322,7 @@ Implications:
 To uninstall everything:
 
 ```powershell
-Unregister-ScheduledTask -TaskName 'Nightingale-Daily-Brief-Morning','Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning','Nightingale-HubSpot-Manager-Nightly' -Confirm:$false
+Unregister-ScheduledTask -TaskName 'Nightingale-Daily-Brief-Morning','Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning','Nightingale-HubSpot-Manager-Nightly','Nightingale-Investor-Analyzer-Weekly','Nightingale-Investor-Newsletter-Biweekly' -Confirm:$false
 ```
 
 To delete credentials:
@@ -386,7 +390,7 @@ nightingale-gtm/
 │   └── signal-watcher-setup.md                          # detailed setup + troubleshooting per agent
 ├── scripts/
 │   ├── install-schedule.ps1                             # registers 6 Task Scheduler entries
-│   ├── setup-secrets.ps1                                # captures Apify + LinkedIn credentials (schema v3)
+│   ├── setup-secrets.ps1                                # captures Apify + LinkedIn credentials + optional deck pointer (schema v4)
 │   ├── run-one-apify-call.ps1                           # per-target worker (called by intro-finder one-shots)
 │   ├── run-one-apify-company-roster.ps1                 # per-attendee Layer-B worker (called by daily-brief, optional)
 │   └── start-ui.ps1                                     # launches the optional UI control panel

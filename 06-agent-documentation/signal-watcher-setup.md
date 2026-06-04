@@ -102,9 +102,11 @@ If the bootstrap folder appears but `seen_ids` is empty, that means the sources 
 
 ## Optional — register the weekly cron
 
+> **Note:** This `CronCreate` path is an **alternative** to `scripts/install-schedule.ps1`, **not** an addition to it. `install-schedule.ps1` already registers the commercial + academic sweeps (Monday 7am) as Windows Task Scheduler entries with these exact trigger phrases. If you have run `install-schedule.ps1`, do **not** also register the sweeps via `CronCreate` — you would double-register them and the sweeps would fire twice (doubling API usage and notifications). Use one mechanism or the other for the sweeps.
+
 Both agents are designed to run weekly on Monday at 7am US Eastern. Registration is per-user (your schedule lives on your machine; it is not committed to the repo).
 
-Inside Claude Code, register the two schedules using `CronCreate`:
+Inside Claude Code, register the two schedules using `CronCreate` (skip this if you used `install-schedule.ps1`):
 
 - Commercial: schedule `0 7 * * 1`, timezone `America/New_York`, trigger phrase `weekly commercial sweep`
 - Academic: schedule `0 7 * * 1`, timezone `America/New_York`, trigger phrase `weekly academic sweep`
@@ -203,14 +205,18 @@ Every scheduled Monday sweep ends with a **Step 11 hand-off** that invokes the c
 | `.claude/agents/intro-finder.md` | Daily warm-intro discovery (Sun-Fri 7am). Consumes the active buying-group file, calls Apify per target via OS-scheduled one-shots, delivers each prior day's intros each morning. |
 | `.claude/agents/gmail-resurfacer.md` | Daily Gmail re-surfacer (Mon-Fri 7am). Walks 12 months of Gmail history forward from a cursor, scores threads against both personas, surfaces top 5 contacts to re-engage today with HubSpot state annotation. Read-only against Gmail/HubSpot/Apollo. No verbatim email body in output. |
 | `.claude/agents/daily-brief.md` | Daily morning calendar brief (Mon-Fri 6am, fires before the 7am stack). Pulls today + tomorrow's calendar, filters to external meetings, assembles per-meeting prep with persona match, recent thread context, cross-agent context, Layer-A cached intro suggestions (via intro-finder's found-mutuals.json) and Layer-B fresh persona-roster intros (Apify or WebSearch fallback). Read-only against all sources. Also surfaces the hubspot-manager pending-approval queue at the top of the brief. |
-| `scripts/run-one-apify-company-roster.ps1` | Layer-B worker for daily-brief. Invoked synchronously per meeting attendee (cap 8/day). Reads optional `apify_company_roster_actor_id` from secrets v3; if absent, the agent falls back to WebSearch without invoking this script. Same conventions as `run-one-apify-call.ps1` (header auth, atomic write, distinct 404 / 429 / cookie-expired statuses). |
+| `scripts/run-one-apify-company-roster.ps1` | Layer-B worker for daily-brief. Invoked synchronously per meeting attendee (cap 8/day). Reads optional `apify_company_roster_actor_id` from secrets v4; if absent, the agent falls back to WebSearch without invoking this script. Same conventions as `run-one-apify-call.ps1` (header auth, atomic write, distinct 404 / 429 / cookie-expired statuses). |
 | `.claude/agents/hubspot-manager.md` | Nightly Mon-Sun 11pm HubSpot writer. Reads last 24h of Granola transcripts + Gmail replies, generates per-source candidates, auto-applies up to 20 low-risk items (call/email logging + summary notes + populate-empty contact metadata), queues everything else for next-morning daily-brief approval. Only agent that writes to HubSpot. Strict guardrails: no deletes, no merges, no overwriting recent values, no cross-operator assignment, active-deal protection. Idempotent via dedup keys + transaction log. Requires the HubSpot MCP connector authorized in Claude Code (OAuth walkthrough in this same doc under "HubSpot Manager"). |
-| `ui/` + `scripts/start-ui.ps1` | Optional local Node.js + React control panel. Reads agent Desktop outputs, surfaces the HubSpot pending-approval queue with inline Apply/Reject buttons, lets you trigger any agent on demand. Loopback-only Express server on `http://localhost:8765`; no per-machine state, no scheduled task. Launch with `.\scripts\start-ui.ps1` (requires Node 18+); stop with Ctrl+C. See `ui/README.md`. |
+| `ui/` + `scripts/start-ui.ps1` | Optional local Node.js + React control panel. Reads agent Desktop outputs, surfaces the approval queues with inline Apply/Reject — HubSpot updates, Pitch Deck Edits, and Investor Newsletter (Approve & create Gmail draft) — and lets you trigger any agent on demand. Loopback-only Express server on `http://localhost:8765`; no per-machine state, no scheduled task. Launch with `.\scripts\start-ui.ps1` (requires Node 18+); stop with Ctrl+C. See `ui/README.md`. |
 | `.claude/agents/feedback-analyzer.md` | On-demand or weekly feedback-loop agent. Reads call transcripts from `/curanostics/nightingale/call transcripts` (team-shared Drive folder) and the operator's inbound Gmail replies, scores them with a weighted confidence model, and emits a propose-only refinement report with literal before/after diffs against the persona files (and any optional diff-target files present in the local checkout). Outputs land on the operator's Desktop at `~/Desktop/nightingale-signals/feedback-insights/`, never in the repo tree. |
 | `scripts/setup-secrets.ps1` | One-time per-machine setup. Prompts for Apify API token + Actor ID + your LinkedIn profile URL + `li_at` cookie. Validates all four against Apify in one round-trip. Writes `~/.nightingale/secrets.json` with restricted ACL. |
 | `scripts/run-one-apify-call.ps1` | Per-target worker invoked by a Windows Scheduled Task one-shot. Calls Apify Actor once via header auth, polls, writes result JSON atomically. Handles 404 / 429 / cookie-expiry as distinct statuses. |
-| `scripts/install-schedule.ps1` | Registers the three Windows Task Scheduler entries (Mon-only sweeps + Sun-Fri intro-finder). |
+| `scripts/install-schedule.ps1` | Registers the eight Windows Task Scheduler entries: daily-brief (Mon-Fri 6am), commercial sweep + academic sweep (Mon 7am), intro-finder (Sun-Fri 7am), gmail-resurfacer (Mon-Fri 7am), hubspot-manager (nightly 11pm), investor-analyzer (Mon 8am, chains pitch-deck-updater), investor-newsletter (biweekly Fri 9am). |
+| `.claude/agents/investor-analyzer.md` | Weekly Mon 8am. Investor-persona refinement from investor call transcripts + investor email replies (propose-only diffs to `01-personas/investor-persona.md`, Desktop output). Auto-chains pitch-deck-updater. See `investor-analyzer-usage.md`. |
+| `.claude/agents/pitch-deck-updater.md` | Chained off investor-analyzer (no own task). Reads the Google Slides deck read-only (pointer = `pitch_deck_drive_file_id` in secrets v4) and proposes slide edits to the dashboard's Pitch Deck Edits queue. Never edits the deck. See `pitch-deck-updater-usage.md`. |
+| `.claude/agents/investor-newsletter.md` | Biweekly Fri 9am. HubSpot delta + internal transcripts → investor update; on approval creates one unsent BCC Gmail draft (only Gmail-writing agent, never sends). See `investor-newsletter-usage.md`. |
 | `01-personas/commercial-persona.md` | ICP source of truth for the commercial side (drives signal qualification AND title-list for contact discovery) |
+| `01-personas/investor-persona.md` | Investor ICP (v0 stub) — Partner = economic buyer, Principal = champion, Associate = diligence gatekeeper. Matured by investor-analyzer. |
 | `01-personas/academic-persona.md` | ICP source of truth for the academic side (v0 stub, will firm up after a few sweeps) |
 | `.claude/agents/prospecter.md` | Sibling agent — full company-first prospect discovery pipeline. The signal-watchers complement, not replace, prospecter. |
 
@@ -458,7 +464,7 @@ Volume cap: **8 external meetings/day**. If the day has more, the first 8 by sta
 
 **Layer B — fresh persona-roster (Apify or WebSearch, today's meetings only)**: for each external attendee with a resolved company, surface persona-matching colleagues at THAT company the attendee could introduce.
 
-- **Preferred path** (when `apify_company_roster_actor_id` is set in secrets v3): invoke `scripts/run-one-apify-company-roster.ps1` synchronously (90s timeout) — Apify LinkedIn-company-employees Actor returns the roster, the worker filters client-side to persona-matching titles, agent surfaces top 5.
+- **Preferred path** (when `apify_company_roster_actor_id` is set in secrets v4): invoke `scripts/run-one-apify-company-roster.ps1` synchronously (90s timeout) — Apify LinkedIn-company-employees Actor returns the roster, the worker filters client-side to persona-matching titles, agent surfaces top 5.
 - **Fallback path** (when the Layer-B Actor is not configured OR Apify times out OR returns non-success): the agent issues WebSearch queries `site:linkedin.com/in "{title-role-token}" "{Company}"` per persona bucket and surfaces top 3 per bucket. Each row tagged `(source: WebSearch — Apify Layer-B not configured)`.
 
 **Caps**: 8 Layer-B lookups/day across all meetings; 3 attendees per meeting maximum. Per-company results are cached for 30 days to avoid re-querying the same company across multiple meetings.
@@ -500,7 +506,8 @@ Optional but recommended connectors (graceful degradation):
 - **HubSpot MCP** — for state annotation. Without it, every attendee shows `HubSpot: not present`.
 - **Apollo MCP** — read-only enrichment when signature/HubSpot doesn't supply company industry / employee count.
 - **ClinicalTrials.gov MCP** — for the cross-agent "trial-design window open" check on the attendee's company.
-- **Apify Layer-B Actor** (optional secret in `~/.nightingale/secrets.json` schema v3 as `apify_company_roster_actor_id`): the daily-brief Layer-B persona-roster Apify path. Without it, Layer-B uses the WebSearch fallback.
+- **Apify Layer-B Actor** (optional secret in `~/.nightingale/secrets.json` schema v4 as `apify_company_roster_actor_id`): the daily-brief Layer-B persona-roster Apify path. Without it, Layer-B uses the WebSearch fallback.
+- **Pitch-deck Drive pointer** (optional secret in `~/.nightingale/secrets.json` schema v4 as `pitch_deck_drive_file_id`, plus optional `pitch_deck_drive_url`): the Google Slides deck the `pitch-deck-updater` agent reads (read-only). Set it via `scripts/setup-secrets.ps1`. Without it, pitch-deck-updater writes a `DECK_POINTER_MISSING` notice and skips cleanly.
 
 ### Trigger phrases
 

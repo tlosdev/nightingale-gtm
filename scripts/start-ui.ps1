@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Launches the Nightingale UI local web server.
 
@@ -65,7 +65,8 @@ if (-not $nodeCmd) {
 }
 $nodeVersionRaw = (& node --version) 2>$null
 if ($nodeVersionRaw -notmatch '^v(\d+)\.') {
-    Write-Error "Could not parse Node.js version: $nodeVersionRaw"
+    Write-Error "Could not determine the Node.js version (got: '$nodeVersionRaw')."
+    Write-Error "Ensure a standard Node.js 18 LTS or newer is on PATH (https://nodejs.org/) and re-run."
     exit 1
 }
 $nodeMajor = [int]$Matches[1]

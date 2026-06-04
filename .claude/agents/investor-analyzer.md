@@ -21,7 +21,7 @@ This agent is **team-generic**: it runs the same way for any Nightingale operato
 
 ## Optional reads (only if present in the local checkout)
 
-Check each path with a file-existence check at Step 1. If absent, skip silently and surface in the report's "Optional diff targets not present" section.
+Check each path with a file-existence check at Step 1. If absent, skip silently and surface in the report's "Optional diff targets not present" section. **These are optional operator-created paths — they are NOT part of the curated `nightingale-gtm` repo, so on a fresh clone they will be absent and skipped by design. Their absence is normal, not an error.**
 
 - `03-product/pitch-deck-outline.md` — slide-by-slide deck outline, if the operator keeps a repo mirror (diff target if present; also consumed by pitch-deck-updater).
 - `00-overview/` — any company-narrative / one-pager / mission docs (diff target if present).

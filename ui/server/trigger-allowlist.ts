@@ -38,6 +38,8 @@ export const ALLOWED_TRIGGER_PATTERNS: ReadonlyArray<RegExp> = [
   // === Investor-side loop (investor-analyzer / pitch-deck-updater / newsletter) ===
   /^RUN investor-analyzer$/,
   /^ANALYZE investor feedback$/,
+  /^ANALYZE investor calls$/,
+  /^REFINE investor-persona$/,
   /^WEEKLY investor insights$/,
   /^RUN pitch-deck-updater$/,
   /^update pitch deck$/,
