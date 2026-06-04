@@ -1,6 +1,6 @@
 # nightingale-gtm
 
-Seven agents for Nightingale's GTM motion — five signal-first prospect-discovery agents, one feedback-loop agent that closes the loop with persona-refinement proposals from calls + emails, and one nightly HubSpot writer that turns the day's transcripts + replies into CRM updates under a strict two-tier guardrail. They run on Windows + Claude Code, hit public clinical-trial / regulatory / funding / academic-research feeds plus your LinkedIn network, your Gmail history, your Google Calendar, your HubSpot account, and a team-shared Google Drive folder of call transcripts, and drop daily/weekly markdown files on your Desktop.
+Twelve agents for Nightingale's GTM + fundraising motion — a prospect-facing chain (signal discovery → buying-group → warm intros → daily brief → Gmail re-surfacing → nightly HubSpot writes, plus a call/email feedback loop that proposes persona refinements) and a three-agent investor/fundraising loop (investor-persona refinement → pitch-deck edit proposals → biweekly investor newsletter). They run on Windows + Claude Code, hit public clinical-trial / regulatory / funding / academic-research feeds plus your LinkedIn network, your Gmail history, your Google Calendar, your HubSpot account, your pitch deck, and a team-shared Google Drive folder of call transcripts, and drop daily/weekly markdown files on your Desktop (and, with the optional UI, into local Apply/Reject approval queues).
 
 - **`signal-watcher-commercial`** — biotech / pharma / med-device sponsors, 10–200 employees, US. Sources: ClinicalTrials.gov, SEC EDGAR 8-Ks, openFDA, press wires, LinkedIn job postings, Apollo funding.
 - **`signal-watcher-academic`** — US academic medical centers and research hospitals running human-subjects studies. Sources: ClinicalTrials.gov (academic Lead Sponsor or Facility), NIH RePORTER, SBIR/STTR, university press / news.
@@ -10,6 +10,12 @@ Seven agents for Nightingale's GTM motion — five signal-first prospect-discove
 - **`daily-brief`** — runs daily Mon–Fri 6am (one hour before the 7am stack so it lands first). Pulls today + tomorrow's Google Calendar, filters to external meetings, and assembles per-meeting prep including persona match, recent thread context, cross-agent context, Layer-A cached intro suggestions (reverse-lookup against intro-finder's `found-mutuals.json`), Layer-B fresh persona-roster intros (Apify with WebSearch fallback), recommended talking points, and HubSpot state. Fully read-only across all sources.
 - **`feedback-analyzer`** — runs on-demand (no Task Scheduler entry; trigger via `RUN feedback-analyzer` or wire up your own weekly cron). Reads call transcripts from the team-shared Google Drive folder `/curanostics/nightingale/call transcripts` AND your inbound Gmail replies (last 7 days), scores them with a weighted confidence model (calls 1.0 / generic email 0.3 / value-prop-quoting or explicit-disqualification email 0.5), and emits a propose-only refinement report with literal before/after diffs against the persona files. Output lands on your Desktop at `~/Desktop/nightingale-signals/feedback-insights/` — never in the repo tree (the report contains verbatim prospect quotes and would otherwise risk being committed to a shared remote).
 - **`hubspot-manager`** — runs nightly Mon-Sun 11pm. The only agent that WRITES to HubSpot. Reads the last 24h of new Granola transcripts + inbound Gmail replies and turns them into HubSpot writes under a strict two-tier guardrail. Auto-applies up to 20 low-risk items per night (log call/email/note engagements; populate-empty contact metadata like title, LinkedIn URL, phone, last-contacted). Queues everything else (object creation, deal stage/amount/close-date/owner/lifecycle changes, demographics/firmographics, strategic notes, anything that would overwrite a recently-set value, anything touching an active deal with activity in the last 7 days). Queued items appear at the top of the next morning's daily-brief; you approve with `apply hubspot updates {N,N,N} from {date}` (or `reject ...`). Never deletes. Never merges. Idempotent re-runs via dedup keys + transaction log. Requires HubSpot MCP authorization (see prerequisites).
+
+The **investor / fundraising loop** adds three more agents (all propose-only — none edits the persona, the deck, or sends email):
+
+- **`investor-analyzer`** — runs weekly Monday 8am. The fundraising-side counterpart to feedback-analyzer. Reads INVESTOR call transcripts (classified out of the shared Granola folder) + inbound investor Gmail replies and proposes before/after diffs to `01-personas/investor-persona.md` using the identical weighted-confidence, propose-only model. Output lands on your Desktop at `~/Desktop/nightingale-signals/investor-insights/` (never the repo). Auto-chains pitch-deck-updater at the end of a full run.
+- **`pitch-deck-updater`** — chained off investor-analyzer (no own scheduled task). Reads your pitch deck (Google Slides, **read-only**; pointer = `pitch_deck_drive_file_id` in secrets.json v4) + the investor persona + the newest investor refinement report, and proposes slide-by-slide before/after edits to the dashboard's **Pitch Deck Edits** approval queue. NEVER edits the Slides file — "Apply" appends approved edits to a Desktop hand-off doc you paste into Slides; "Reject" only logs. Without a deck pointer it writes a `DECK_POINTER_MISSING-{date}.md` notice and skips cleanly.
+- **`investor-newsletter`** — runs biweekly Friday 9am. Summarizes HubSpot changes since the last newsletter (read-only cursor delta) + internal-team transcripts into an investor-persona-optimized update, builds the recipient roster from investor transcripts + Google Calendar (verbatim emails only), and queues it in the dashboard's **Investor Newsletter** view. The ONLY agent that writes to Gmail: on approval (`approve newsletter draft from {date}`) it creates ONE unsent draft with all recipients in **BCC** (To = you) — draft only, never sends.
 
 This repo is **Windows-only** as of 2026-05. macOS and Linux are not supported.
 
@@ -35,7 +41,7 @@ Do these in order. Each one takes 2–5 minutes; the whole sequence is ~30 minut
    ```powershell
    .\scripts\install-schedule.ps1
    ```
-   This registers six Windows Task Scheduler entries (see [What runs when](#what-runs-when) below). Verify with:
+   This registers eight Windows Task Scheduler entries (see [What runs when](#what-runs-when) below). Verify with:
    ```powershell
    Get-ScheduledTask -TaskName 'Nightingale-*'
    ```
@@ -43,7 +49,7 @@ Do these in order. Each one takes 2–5 minutes; the whole sequence is ~30 minut
    ```powershell
    .\scripts\setup-secrets.ps1
    ```
-   This captures Apify API token + Apify Actor IDs + a LinkedIn `li_at` cookie and writes them with a restricted ACL to `%USERPROFILE%\.nightingale\secrets.json`. Skip if you only want the signal-watcher + buying-group-finder + gmail-resurfacer + daily-brief (without Layer-B) + hubspot-manager + feedback-analyzer stages.
+   This captures Apify API token + Apify Actor IDs + a LinkedIn `li_at` cookie + an optional pitch-deck pointer and writes them with a restricted ACL to `%USERPROFILE%\.nightingale\secrets.json`. Skip if you only want the signal-watcher + buying-group-finder + gmail-resurfacer + daily-brief (without Layer-B) + hubspot-manager + feedback-analyzer + investor loop (without the pitch-deck pointer) stages.
 8. **Smoke test each agent** — see [Smoke tests](#smoke-tests) below.
 
 If any step fails, the relevant agent will write a `*_NOT_AUTHORIZED-{date}.md` or `SECRETS_MISSING-{date}.md` or `MCPS_NOT_AUTHORIZED-{date}.md` notice on your Desktop the next time it runs. Each notice contains the exact recovery steps inline.
@@ -86,7 +92,7 @@ claude -p "daily brief dry run"
 claude -p "list pending hubspot updates"
 ```
 
-That's it. Step 2 registers **six** Windows Task Scheduler entries. Step 3 is opt-in. MCP connector authorization (HubSpot, Gmail, Calendar, Drive, Apollo, ClinicalTrials.gov) happens inside Claude Code's Settings → Connectors UI — see below.
+That's it. Step 2 registers **eight** Windows Task Scheduler entries. Step 3 is opt-in. MCP connector authorization (HubSpot, Gmail, Calendar, Drive, Apollo, ClinicalTrials.gov) happens inside Claude Code's Settings → Connectors UI — see below.
 
 ---
 
@@ -136,7 +142,7 @@ The `nightingale-signals\` folder is created automatically on the first run.
 
 ---
 
-## Four agents are opt-in (need external authorization)
+## Opt-in agents (need external authorization)
 
 - `intro-finder` needs Apify + a LinkedIn `li_at` cookie (set up via `scripts/setup-secrets.ps1`).
 - `gmail-resurfacer` needs the Gmail MCP connector authorized in Claude Code (Settings → Connectors → Gmail). Optionally also authorize the HubSpot + Apollo + ClinicalTrials.gov MCP connectors for richer scoring and annotation.
@@ -306,7 +312,7 @@ If you miss several days in a row, the signal-watchers and gmail-resurfacer will
 
 ## What the install scripts actually do
 
-`install-schedule.ps1` does NOT add any cron daemon or background service. It registers six entries with Windows Task Scheduler that invoke `claude -p "..."` with the appropriate trigger phrase. You can see them with:
+`install-schedule.ps1` does NOT add any cron daemon or background service. It registers eight entries with Windows Task Scheduler that invoke `claude -p "..."` with the appropriate trigger phrase. You can see them with:
 
 ```powershell
 Get-ScheduledTask -TaskName 'Nightingale-*'
@@ -382,14 +388,21 @@ nightingale-gtm/
 │       ├── gmail-resurfacer.md
 │       ├── daily-brief.md
 │       ├── feedback-analyzer.md
-│       └── hubspot-manager.md
+│       ├── hubspot-manager.md
+│       ├── investor-analyzer.md
+│       ├── pitch-deck-updater.md
+│       └── investor-newsletter.md
 ├── 01-personas/
 │   ├── commercial-persona.md
-│   └── academic-persona.md
+│   ├── academic-persona.md
+│   └── investor-persona.md
 ├── 06-agent-documentation/
-│   └── signal-watcher-setup.md                          # detailed setup + troubleshooting per agent
+│   ├── signal-watcher-setup.md                          # detailed setup + troubleshooting per agent
+│   ├── investor-analyzer-usage.md
+│   ├── pitch-deck-updater-usage.md
+│   └── investor-newsletter-usage.md
 ├── scripts/
-│   ├── install-schedule.ps1                             # registers 6 Task Scheduler entries
+│   ├── install-schedule.ps1                             # registers 8 Task Scheduler entries
 │   ├── setup-secrets.ps1                                # captures Apify + LinkedIn credentials + optional deck pointer (schema v4)
 │   ├── run-one-apify-call.ps1                           # per-target worker (called by intro-finder one-shots)
 │   ├── run-one-apify-company-roster.ps1                 # per-attendee Layer-B worker (called by daily-brief, optional)
@@ -422,7 +435,7 @@ For deeper troubleshooting (cookie rotation, signal-watcher dedup edge cases, in
 
 ## What this does NOT do (v1)
 
-- No outreach message generation — the qualified-list / buying-group / intros / brief / refinement markdown files are the deliverables.
+- No prospect outreach message generation — the qualified-list / buying-group / intros / brief / refinement markdown files are the prospect-side deliverables. (The only generated message content is investor-facing and operator-approved: pitch-deck edit proposals and the biweekly investor-newsletter draft.)
 - No HubSpot deletes (categorically forbidden by hubspot-manager — even with explicit approval).
 - No HubSpot contact / company merges.
 - No Apollo enrichment on Weak-tier commercial companies (free-tier credit gate).
