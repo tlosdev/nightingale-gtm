@@ -37,14 +37,16 @@ Do these in order. Each one takes 2–5 minutes; the whole sequence is ~30 minut
    ```
 4. **Request Google Drive share access** to the team-shared call transcripts folder `/curanostics/nightingale/call transcripts` from whoever owns it on the Nightingale team. Without share access the `feedback-analyzer` and `hubspot-manager` Drive-sourced features are dead in the water — they'll still run but find zero transcripts.
 5. **Authorize MCP connectors in Claude Code** — see [MCP connector authorization](#mcp-connector-authorization) below. Minimum recommended set: ClinicalTrials.gov, Apollo, Gmail, Google Calendar, Google Drive, HubSpot.
-6. **Register the scheduled tasks** (one-time per machine):
+6. **Put the agents on a schedule** (one-time per machine). Activate the GitHub Actions self-hosted runner — this is what fires the agents on schedule, runs them on *this* host (so local Claude Code auth + claude.ai MCP + the Desktop tree are available), and survives a powered-off machine:
    ```powershell
-   .\scripts\install-schedule.ps1
+   .\scripts\activate-runner.ps1
    ```
-   This registers eight Windows Task Scheduler entries (see [What runs when](#what-runs-when) below). Verify with:
+   It requests elevation (UAC prompt), fetches a runner registration token via the `gh` CLI, installs the runner as a boot-start Windows service, removes any legacy Task Scheduler agents (so nothing double-fires), and prints a verification summary. **Prereqs:** the GitHub CLI (`gh`) installed and authenticated (`gh auth login`) with **admin** on the repo that hosts the workflows — `tlosdev/nightingale-gtm`, or your fork (pass `-RepoUrl`/`-GhAccount`). If you don't use `gh`, mint a token yourself and pass `-Token` (see the doc). Full walkthrough: [`06-agent-documentation/github-runner-setup.md`](06-agent-documentation/github-runner-setup.md). Verify:
    ```powershell
-   Get-ScheduledTask -TaskName 'Nightingale-*'
+   Get-Service 'actions.runner.*'                 # Running, StartType Automatic
+   Get-ScheduledTask -TaskName 'Nightingale-*'    # only Nightingale-Boot-Catchup remains
    ```
+   > **Legacy fallback** (no GitHub runner; does **not** survive a reboot): `.\scripts\install-schedule.ps1 -Legacy` registers eight Windows Task Scheduler entries instead. Don't run both — they double-fire.
 7. **(Optional) Run setup-secrets** for the intro-finder + daily-brief Layer-B features:
    ```powershell
    .\scripts\setup-secrets.ps1
@@ -78,9 +80,9 @@ The UI is **opt-in** — the chain works identically whether or not it's running
 git clone https://github.com/tlosdev/nightingale-gtm.git
 cd nightingale-gtm
 
-# 2. Set execution policy + register schedules
+# 2. Set execution policy + activate the runner (schedules the agents)
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
-.\scripts\install-schedule.ps1
+.\scripts\activate-runner.ps1          # UAC + gh required; legacy fallback: install-schedule.ps1 -Legacy
 
 # 3. (Optional) Configure Apify + LinkedIn for intro-finder + daily-brief Layer-B
 .\scripts\setup-secrets.ps1
@@ -92,7 +94,7 @@ claude -p "daily brief dry run"
 claude -p "list pending hubspot updates"
 ```
 
-That's it. Step 2 registers **eight** Windows Task Scheduler entries. Step 3 is opt-in. MCP connector authorization (HubSpot, Gmail, Calendar, Drive, Apollo, ClinicalTrials.gov) happens inside Claude Code's Settings → Connectors UI — see below.
+That's it. Step 2 activates the GitHub Actions self-hosted runner (scheduling lives in `.github/workflows/*.yml`; execution stays on this host; survives a reboot) and retires any legacy tasks. The legacy Task Scheduler path (`install-schedule.ps1 -Legacy`, eight entries, no reboot survival) is the fallback only. Step 3 is opt-in. MCP connector authorization (HubSpot, Gmail, Calendar, Drive, Apollo, ClinicalTrials.gov) happens inside Claude Code's Settings → Connectors UI — see below.
 
 ---
 
@@ -312,18 +314,20 @@ If you miss several days in a row, the signal-watchers and gmail-resurfacer will
 
 ## What the install scripts actually do
 
-`install-schedule.ps1` does NOT add any cron daemon or background service. It registers eight entries with Windows Task Scheduler that invoke `claude -p "..."` with the appropriate trigger phrase. You can see them with:
+**Canonical (Phase 3): `activate-runner.ps1` → a GitHub Actions self-hosted runner.** Scheduling lives in `.github/workflows/*.yml` (cron in **UTC**); execution runs on *this* machine via a runner installed as a boot-start Windows service, so the agents still see your local Claude Code auth, claude.ai MCP connectors, and Desktop output tree. `activate-runner.ps1` mints the runner token, installs the service, registers the on-boot `Nightingale-Boot-Catchup` backstop, and retires the legacy tasks. You can see the runner + remaining task with:
 
 ```powershell
-Get-ScheduledTask -TaskName 'Nightingale-*'
+Get-Service 'actions.runner.*'                 # the runner service
+Get-ScheduledTask -TaskName 'Nightingale-*'    # only Nightingale-Boot-Catchup (+ dynamic intro one-shots)
 ```
 
 Implications:
 
-- **The schedule is per-machine.** If you clone the repo on a second machine and want it running there too, re-run `install-schedule.ps1` on that machine.
-- **Schedules are not committed to the repo.** Cloning gives you the agent files, not the schedule itself. The install script is the bridge.
-- **Tasks run with `-LogonType Interactive`.** They fire only when you're logged in. If your laptop is locked but logged-in and on AC, Windows will wake to fire the trigger. If you log out, tasks queue and fire next login.
-- **Time is LOCAL.** Edit the `-At "7:00am"` argument in `install-schedule.ps1` before running if you want a different fire time.
+- **Survives a powered-off machine.** If the PC is off at the cron time, GitHub queues the run and the runner picks it up when it boots; `boot-catchup.ps1` covers >24h outages. This is the whole reason the runner replaced Task Scheduler.
+- **The runner is per-machine.** Run `activate-runner.ps1` on each machine you want firing the agents. The workflows (the schedule itself) ARE committed to the repo; the runner registration is the per-machine bridge.
+- **Time zone is UTC, no DST.** The crons assume US Eastern *Standard* time; during EDT every agent fires +1h local (all shift together). Edit the `cron:` lines in `.github/workflows/*.yml` for a different zone. See [`06-agent-documentation/github-runner-setup.md`](06-agent-documentation/github-runner-setup.md).
+
+**Legacy fallback: `install-schedule.ps1 -Legacy`** registers eight Windows Task Scheduler entries that invoke `claude -p "..."` directly. It does NOT survive a reboot the way the runner does, runs with `-LogonType Interactive` (fires only when logged in), and uses LOCAL time. Use it only if you can't run the GitHub runner. The bare `install-schedule.ps1` (no `-Legacy`) is a deprecation shim that just prints this guidance and registers nothing.
 
 To uninstall everything:
 
@@ -402,11 +406,17 @@ nightingale-gtm/
 │   ├── pitch-deck-updater-usage.md
 │   └── investor-newsletter-usage.md
 ├── scripts/
-│   ├── install-schedule.ps1                             # registers 8 Task Scheduler entries
-│   ├── setup-secrets.ps1                                # captures Apify + LinkedIn credentials + optional deck pointer (schema v4)
+│   ├── activate-runner.ps1                              # one-command Phase 3 activation (runner + migrate + verify)
+│   ├── install-runner.ps1                               # installs the GitHub Actions self-hosted runner as a service
+│   ├── boot-catchup.ps1                                 # >24h missed-run backstop (on boot)
+│   ├── uninstall-schedule.ps1                           # removes the 8 legacy Task Scheduler agents
+│   ├── install-schedule.ps1                             # DEPRECATED shim; -Legacy registers 8 Task Scheduler entries
+│   ├── setup-secrets.ps1                                # captures Apify + LinkedIn + optional deck pointer + GitHub PAT (schema v5)
+│   ├── write-secrets.ps1                                # non-interactive secrets writer (used by the UI Settings tab)
 │   ├── run-one-apify-call.ps1                           # per-target worker (called by intro-finder one-shots)
 │   ├── run-one-apify-company-roster.ps1                 # per-attendee Layer-B worker (called by daily-brief, optional)
-│   └── start-ui.ps1                                     # launches the optional UI control panel
+│   ├── start-ui.ps1                                     # launches the optional UI control panel
+│   └── install-desktop-icon.ps1                         # optional Desktop shortcut to open the UI
 └── ui/                                                  # optional local Node.js + React control panel
     ├── README.md
     ├── package.json
