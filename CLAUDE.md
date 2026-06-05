@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-Twelve agents for Nightingale's GTM motion, plus four Windows PowerShell scripts that register most of them with Windows Task Scheduler and capture the credentials the intro-finder + daily-brief Layer-B stages need. The repo is **Windows-only** as of 2026-05 — `.sh` parity was dropped to reduce maintenance surface.
+Twelve agents for Nightingale's GTM motion, plus five Windows PowerShell scripts that register the agents with Windows Task Scheduler, capture the credentials the intro-finder + daily-brief Layer-B stages need, run the per-target Apify workers, and launch the optional UI. The repo is **Windows-only** as of 2026-05 — `.sh` parity was dropped to reduce maintenance surface.
 
 Stages 1–7 are the prospect-facing chain (daily-brief Mon-Fri 6am; sweeps + buying-group chained Mon 7am; intro-finder Sun-Fri 7am; gmail-resurfacer Mon-Fri 7am; feedback-analyzer on-demand or weekly; hubspot-manager nightly Mon-Sun 11pm). Stages 8–10 are the investor / fundraising loop (investor-analyzer weekly Mon 8am, chaining pitch-deck-updater; investor-newsletter biweekly Fri 9am):
 
