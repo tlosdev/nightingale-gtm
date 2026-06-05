@@ -1,0 +1,26 @@
+# Nightingale — pitch-deck-updater (self-hosted GitHub Actions runner)
+#
+# Normally CHAINED off investor-analyzer (no own schedule). This dispatch-only
+# workflow exists so the dashboard's "Run now" works in Docker/container mode
+# (which dispatches a workflow instead of spawning the host claude CLI) and so
+# the deck-edit queue can be refreshed on demand. Triggered manually via the UI
+# or `gh workflow run`.
+name: Nightingale Pitch Deck Updater
+on:
+  workflow_dispatch:
+concurrency:
+  group: nightingale-pitch-deck-updater
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 20
+    steps:
+      - name: Run pitch-deck-updater
+        shell: powershell
+        run: |
+          $vault = $env:NIGHTINGALE_VAULT
+          if ([string]::IsNullOrWhiteSpace($vault)) { Write-Error 'NIGHTINGALE_VAULT is not set on this runner. Re-run scripts/install-runner.ps1.'; exit 1 }
+          if (-not (Test-Path $vault)) { Write-Error "NIGHTINGALE_VAULT path not found: $vault"; exit 1 }
+          Set-Location $vault
+          claude -p "RUN pitch-deck-updater"

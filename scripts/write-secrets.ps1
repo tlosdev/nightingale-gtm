@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Non-interactive partial writer for ~/.nightingale/secrets.json (schema v4).
+    Non-interactive partial writer for ~/.nightingale/secrets.json (schema v5).
     Reads a JSON object of changed fields from STDIN, merges it with the
     existing secrets file, and performs an ACL-first atomic write.
 
@@ -14,13 +14,13 @@
       Required-shape : apify_api_token, apify_actor_id, apify_validation_url,
                        linkedin_li_at
       Optional       : apify_company_roster_actor_id, pitch_deck_drive_file_id,
-                       pitch_deck_drive_url
+                       pitch_deck_drive_url, github_pat, github_repo
     For the OPTIONAL fields, an explicit empty string ("") clears the field
     (omit-when-empty). Required-shape fields are only ever set, never written
     empty (the server rejects empty values for them before calling this script).
 
     Emits a single-line JSON result on the LAST stdout line:
-      {"ok":true,"written_fields":[...],"schema_version":4}
+      {"ok":true,"written_fields":[...],"schema_version":5}
     or on failure:
       {"ok":false,"error":"..."}
 
@@ -30,7 +30,7 @@
 .NOTES
     The ACL-first atomic write block below is intentionally DUPLICATED from
     scripts/setup-secrets.ps1 (the "Write secrets.json" section, ~lines 475-556).
-    Both copies MUST stay in sync — if you change the ACL handling in one,
+    Both copies MUST stay in sync - if you change the ACL handling in one,
     change it in the other. We duplicate rather than factor out to avoid risky
     surgery on the tested interactive validator.
 
@@ -61,7 +61,7 @@ try {
     }
 
     $requiredShape = @('apify_api_token', 'apify_actor_id', 'apify_validation_url', 'linkedin_li_at')
-    $optional      = @('apify_company_roster_actor_id', 'pitch_deck_drive_file_id', 'pitch_deck_drive_url')
+    $optional      = @('apify_company_roster_actor_id', 'pitch_deck_drive_file_id', 'pitch_deck_drive_url', 'github_pat', 'github_repo')
     $known         = $requiredShape + $optional
 
     $secretsDir  = Join-Path $env:USERPROFILE '.nightingale'
@@ -130,12 +130,12 @@ try {
         exit 0
     }
 
-    # --- Rebuild the canonical ordered object (schema v4) --------------------
+    # --- Rebuild the canonical ordered object (schema v5) --------------------
     $createdAt = if ($merged.Contains('created_at') -and $merged['created_at']) { $merged['created_at'] } else { (Get-Date -Format 'yyyy-MM-dd') }
     $updatedAt = (Get-Date -Format 'yyyy-MM-dd')
 
     $out = [ordered]@{
-        schema_version = 4
+        schema_version = 5
         created_at     = $createdAt
         updated_at     = $updatedAt
     }
@@ -195,7 +195,7 @@ try {
     }
     # === end mirrored block =================================================
 
-    Emit-Result @{ ok = $true; written_fields = @($writtenFields); schema_version = 4 }
+    Emit-Result @{ ok = $true; written_fields = @($writtenFields); schema_version = 5 }
     exit 0
 } catch {
     Emit-Result @{ ok = $false; error = "exception: $($_.Exception.Message)" }

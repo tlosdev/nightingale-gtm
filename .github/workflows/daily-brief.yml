@@ -1,0 +1,32 @@
+# Nightingale — daily-brief (self-hosted GitHub Actions runner)
+#
+# GitHub cron is UTC only — it has no timezone and does NOT follow local DST.
+# The time below assumes US Eastern STANDARD time (EST, UTC-5). During Eastern
+# DAYLIGHT time (EDT, UTC-4; roughly mid-Mar–early-Nov) every Nightingale
+# workflow fires one hour LATER in local terms. They all shift together, so the
+# relative ordering (brief lands before the 7am stack) is always preserved.
+# Operators outside US Eastern should edit the cron line, or just rely on
+# workflow_dispatch + scripts/boot-catchup.ps1.
+#
+# Local: Mon–Fri 06:00 ET  →  UTC 11:00
+name: Nightingale Daily Brief
+on:
+  schedule:
+    - cron: '0 11 * * 1-5'
+  workflow_dispatch:
+concurrency:
+  group: nightingale-daily-brief
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 15
+    steps:
+      - name: Run daily-brief
+        shell: powershell
+        run: |
+          $vault = $env:NIGHTINGALE_VAULT
+          if ([string]::IsNullOrWhiteSpace($vault)) { Write-Error 'NIGHTINGALE_VAULT is not set on this runner. Re-run scripts/install-runner.ps1.'; exit 1 }
+          if (-not (Test-Path $vault)) { Write-Error "NIGHTINGALE_VAULT path not found: $vault"; exit 1 }
+          Set-Location $vault
+          claude -p "daily brief morning"

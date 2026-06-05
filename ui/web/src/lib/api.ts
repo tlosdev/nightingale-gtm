@@ -152,6 +152,8 @@ export interface SecretsHealth {
   has_apify_company_roster_actor_id: boolean;
   has_pitch_deck_drive_file_id: boolean;
   has_pitch_deck_drive_url: boolean;
+  has_github_pat: boolean;
+  has_github_repo: boolean;
   updated_at: string | null;
 }
 
@@ -178,6 +180,8 @@ export interface SecretsUpdate {
   apify_company_roster_actor_id?: string;
   pitch_deck_drive_file_id?: string;
   pitch_deck_drive_url?: string;
+  github_pat?: string;
+  github_repo?: string;
 }
 export interface SecretsSaveResp {
   ok: boolean;
@@ -203,9 +207,14 @@ export interface RunDetail {
   log_tail: string;
 }
 export interface AgentRunResp {
-  run_id: string;
   agent: string;
-  phrase: string;
+  // Host mode: a background run was started — poll runDetail(run_id).
+  run_id?: string;
+  phrase?: string;
+  // Container (Docker) mode: a GitHub workflow_dispatch was fired to the
+  // self-hosted runner instead of spawning the host CLI.
+  dispatched?: boolean;
+  workflow?: string;
 }
 
 // === Callers ===

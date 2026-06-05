@@ -1,0 +1,24 @@
+# Nightingale — feedback-analyzer (self-hosted GitHub Actions runner)
+#
+# On-demand only — no schedule. Exists so the dashboard's "Run now" works in
+# Docker/container mode (which dispatches a workflow instead of spawning the
+# host claude CLI). Triggered manually via the UI or `gh workflow run`.
+name: Nightingale Feedback Analyzer
+on:
+  workflow_dispatch:
+concurrency:
+  group: nightingale-feedback-analyzer
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 20
+    steps:
+      - name: Run feedback-analyzer
+        shell: powershell
+        run: |
+          $vault = $env:NIGHTINGALE_VAULT
+          if ([string]::IsNullOrWhiteSpace($vault)) { Write-Error 'NIGHTINGALE_VAULT is not set on this runner. Re-run scripts/install-runner.ps1.'; exit 1 }
+          if (-not (Test-Path $vault)) { Write-Error "NIGHTINGALE_VAULT path not found: $vault"; exit 1 }
+          Set-Location $vault
+          claude -p "ANALYZE feedback"

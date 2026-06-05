@@ -6,7 +6,8 @@ import { PATHS, latestFileMatching } from '../lib/paths.js';
 import { AGENT_TRIGGERS, type AgentName } from '../trigger-allowlist.js';
 import { startRun } from '../lib/runs.js';
 import { getNightingaleScheduledTasks } from '../lib/powershell.js';
-import { canSpawnHostProcess, CONTAINER_ACTION_MESSAGE } from '../lib/runtime.js';
+import { canSpawnHostProcess } from '../lib/runtime.js';
+import { dispatchConfigured, dispatchWorkflow } from '../lib/dispatch.js';
 
 export const agentsRouter = Router();
 
@@ -146,17 +147,40 @@ const AGENT_TIMEOUT_MS: Record<AgentName, number> = {
 // for live status + log tail. This is what fixes the "spinner hangs forever"
 // UX: even if a run takes 15 minutes (or wedges and is timeout-killed), the
 // HTTP request returns in milliseconds and the run settles in the registry.
-agentsRouter.post('/run', (req, res) => {
+agentsRouter.post('/run', async (req, res) => {
   const parse = RunRequestSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: 'invalid_request', details: parse.error.flatten() });
     return;
   }
+  const agent = parse.data.agent;
+
+  // CONTAINER MODE: we can't spawn the host claude CLI. Phase 3 gives us a
+  // second trigger path — dispatch a GitHub workflow to the self-hosted runner,
+  // which runs `claude -p` on the host with full local auth. This converges the
+  // container + native Run-now onto one path. If no PAT/repo is configured, fall
+  // back to the honest 503 telling the operator how to enable it.
   if (!canSpawnHostProcess()) {
-    res.status(503).json({ error: 'container_mode', message: CONTAINER_ACTION_MESSAGE });
+    if (!dispatchConfigured()) {
+      res.status(503).json({
+        error: 'dispatch_not_configured',
+        message:
+          'Docker (container) mode cannot spawn the host Claude Code CLI. To enable ' +
+          '"Run now" from the container, add a GitHub fine-grained PAT (Actions: ' +
+          'read/write) + owner/repo in Settings, then it will dispatch the agent ' +
+          'workflow to your self-hosted runner. Or run the UI natively on the host.',
+      });
+      return;
+    }
+    const result = await dispatchWorkflow(agent);
+    if (!result.ok) {
+      res.status(502).json({ error: 'dispatch_failed', detail: result.error, status: result.status, workflow: result.workflow });
+      return;
+    }
+    res.json({ dispatched: true, agent, workflow: result.workflow });
     return;
   }
-  const agent = parse.data.agent;
+
   const phrase = AGENT_TRIGGERS[agent];
   const timeoutMs = AGENT_TIMEOUT_MS[agent] ?? 5 * 60 * 1000;
   try {

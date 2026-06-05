@@ -1,0 +1,33 @@
+# Nightingale — intro-finder (self-hosted GitHub Actions runner)
+#
+# GitHub cron is UTC only and does NOT follow local DST. Time assumes US Eastern
+# STANDARD time (EST, UTC-5); during EDT it fires 1h later local (see
+# daily-brief.yml for the full DST note).
+#
+# NOTE: intro-finder still schedules its per-target Apify one-shots via Windows
+# Task Scheduler on the host (run-one-apify-call.ps1). Those dynamic one-shots
+# are intentionally NOT migrated to GitHub — only this daily delivery+queue pass
+# moves here.
+#
+# Local: Sun–Fri 07:00 ET  →  UTC 12:00   (Saturday idle)
+name: Nightingale Intro Finder
+on:
+  schedule:
+    - cron: '0 12 * * 0-5'
+  workflow_dispatch:
+concurrency:
+  group: nightingale-intro-finder
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 30
+    steps:
+      - name: Run intro-finder
+        shell: powershell
+        run: |
+          $vault = $env:NIGHTINGALE_VAULT
+          if ([string]::IsNullOrWhiteSpace($vault)) { Write-Error 'NIGHTINGALE_VAULT is not set on this runner. Re-run scripts/install-runner.ps1.'; exit 1 }
+          if (-not (Test-Path $vault)) { Write-Error "NIGHTINGALE_VAULT path not found: $vault"; exit 1 }
+          Set-Location $vault
+          claude -p "intro-finder daily morning"

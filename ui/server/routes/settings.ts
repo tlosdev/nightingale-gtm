@@ -33,6 +33,8 @@ settingsRouter.get('/connectors', (_req, res) => {
 // /in/ profile. The deck file id is an opaque Drive id. Required fields cannot
 // be set to empty; optional fields MAY be set to "" to clear them.
 const actorIdRe = /^[^~\s/]+~[^~\s/]+$/;
+// owner/repo, e.g. ben-nightingale/Nightingale.
+const repoRe = /^[\w.-]+\/[\w.-]+$/;
 
 const SecretsUpdateSchema = z
   .object({
@@ -52,6 +54,13 @@ const SecretsUpdateSchema = z
     pitch_deck_drive_url: z
       .string()
       .refine((v) => v === '' || /^https:\/\//i.test(v), 'expected an https URL or empty')
+      .optional(),
+    // Schema v5: GitHub workflow_dispatch (container-mode Run-now + boot-catchup).
+    // PAT is secret; repo is owner/repo. Empty string clears either.
+    github_pat: z.string().optional(),
+    github_repo: z
+      .string()
+      .refine((v) => v === '' || repoRe.test(v), 'expected owner/repo or empty')
       .optional(),
   })
   .strict();

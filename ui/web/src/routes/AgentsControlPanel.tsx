@@ -1,9 +1,9 @@
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, AgentSummary } from '../lib/api';
+import { api, AgentSummary, AgentRunResp } from '../lib/api';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
-import { useContainerMode, CONTAINER_DISABLED_HINT } from '../lib/useRunMode';
+import { useContainerMode } from '../lib/useRunMode';
 
 export default function AgentsControlPanel() {
   const agents = useQuery({ queryKey: ['agents'], queryFn: api.agents });
@@ -33,13 +33,13 @@ export default function AgentsControlPanel() {
 function AgentCard({ agent }: { agent: AgentSummary }) {
   const qc = useQueryClient();
   const containerMode = useContainerMode();
-  const [started, setStarted] = useState<{ run_id: string } | null>(null);
+  const [started, setStarted] = useState<AgentRunResp | null>(null);
   const [showOutput, setShowOutput] = useState(false);
 
   const runMutation = useMutation({
     mutationFn: () => api.agentRun(agent.name),
     onSuccess: (r) => {
-      setStarted({ run_id: r.run_id });
+      setStarted(r);
       // A new run now exists — refresh the Logs list so it shows up there too.
       qc.invalidateQueries({ queryKey: ['runs'] });
     },
@@ -83,12 +83,16 @@ function AgentCard({ agent }: { agent: AgentSummary }) {
         <div className="flex flex-col gap-1 shrink-0">
           <button
             type="button"
-            disabled={runMutation.isPending || containerMode}
-            title={containerMode ? CONTAINER_DISABLED_HINT : undefined}
+            disabled={runMutation.isPending}
+            title={
+              containerMode
+                ? 'Docker mode: dispatches this agent as a GitHub workflow to your self-hosted runner (requires a GitHub PAT + repo in Settings).'
+                : undefined
+            }
             onClick={() => runMutation.mutate()}
             className="px-3 py-1.5 text-sm font-medium rounded bg-accent-600 hover:bg-accent-700 text-white disabled:opacity-50"
           >
-            {runMutation.isPending ? 'Starting…' : 'Run now'}
+            {runMutation.isPending ? 'Starting…' : containerMode ? 'Dispatch run' : 'Run now'}
           </button>
           <button
             type="button"
@@ -100,7 +104,13 @@ function AgentCard({ agent }: { agent: AgentSummary }) {
         </div>
       </div>
 
-      {started && (
+      {started && started.dispatched && (
+        <div className="mt-3 p-2 text-xs rounded border border-blue-500/30 bg-blue-500/5 text-blue-800 dark:text-blue-300">
+          Dispatched <code>{started.workflow}</code> to your self-hosted runner via GitHub Actions.
+          Watch it under the repo's Actions tab; its output lands in the usual Desktop tree.
+        </div>
+      )}
+      {started && !started.dispatched && started.run_id && (
         <div className="mt-3 p-2 text-xs rounded border border-blue-500/30 bg-blue-500/5 text-blue-800 dark:text-blue-300">
           Run started (<code>{started.run_id}</code>).{' '}
           <Link to="/logs" className="underline">Open Logs →</Link>
@@ -108,7 +118,7 @@ function AgentCard({ agent }: { agent: AgentSummary }) {
       )}
       {runMutation.error && (
         <div className="mt-3 p-2 text-xs rounded border border-red-500/30 bg-red-500/5 text-red-800 dark:text-red-300">
-          Failed to start: {(runMutation.error as Error).message}
+          Failed to start: {((runMutation.error as { body?: { message?: string } }).body?.message) ?? (runMutation.error as Error).message}
         </div>
       )}
 

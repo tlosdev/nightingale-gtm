@@ -22,6 +22,8 @@ const FIELDS: FieldDef[] = [
   { key: 'apify_company_roster_actor_id', label: 'Company-roster Actor ID (optional, Layer-B)', required: false, secret: false, placeholder: 'username~actor-name', presence: (h) => h.has_apify_company_roster_actor_id },
   { key: 'pitch_deck_drive_file_id', label: 'Pitch-deck Drive file ID (optional)', required: false, secret: false, placeholder: '1AbC…', presence: (h) => h.has_pitch_deck_drive_file_id },
   { key: 'pitch_deck_drive_url', label: 'Pitch-deck Drive URL (optional)', required: false, secret: false, placeholder: 'https://docs.google.com/presentation/d/…', presence: (h) => h.has_pitch_deck_drive_url },
+  { key: 'github_pat', label: 'GitHub PAT (optional — Run-now in Docker + boot-catchup)', required: false, secret: true, placeholder: 'github_pat_…', presence: (h) => h.has_github_pat },
+  { key: 'github_repo', label: 'GitHub repo (optional — owner/repo)', required: false, secret: false, placeholder: 'ben-nightingale/Nightingale', presence: (h) => h.has_github_repo },
 ];
 
 export default function Settings() {

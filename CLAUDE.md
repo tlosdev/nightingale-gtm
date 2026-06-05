@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-Twelve agents for Nightingale's GTM motion, plus five Windows PowerShell scripts that register the agents with Windows Task Scheduler, capture the credentials the intro-finder + daily-brief Layer-B stages need, run the per-target Apify workers, and launch the optional UI. The repo is **Windows-only** as of 2026-05 — `.sh` parity was dropped to reduce maintenance surface.
+Twelve agents for Nightingale's GTM motion, plus Windows PowerShell scripts and GitHub Actions workflows. As of Phase 3, agent scheduling lives in `.github/workflows/*.yml` (GitHub cron + `workflow_dispatch`) run on a **self-hosted runner** installed by `scripts/install-runner.ps1`; the scripts also capture credentials (`setup-secrets.ps1`), run the per-target Apify workers, drive the boot catch-up backstop, and launch the optional UI. The repo is **Windows-only** as of 2026-05 — `.sh` parity was dropped to reduce maintenance surface.
 
 Stages 1–7 are the prospect-facing chain (daily-brief Mon-Fri 6am; sweeps + buying-group chained Mon 7am; intro-finder Sun-Fri 7am; gmail-resurfacer Mon-Fri 7am; feedback-analyzer on-demand or weekly; hubspot-manager nightly Mon-Sun 11pm). Stages 8–10 are the investor / fundraising loop (investor-analyzer weekly Mon 8am, chaining pitch-deck-updater; investor-newsletter biweekly Fri 9am):
 
@@ -25,19 +25,23 @@ Stages 1–7 are the prospect-facing chain (daily-brief Mon-Fri 6am; sweeps + bu
 
 ## Scripts
 
-- **`scripts/install-schedule.ps1`** — registers eight Windows Task Scheduler entries (daily-brief, commercial sweep, academic sweep, intro-finder morning, gmail-resurfacer morning, hubspot-manager nightly, investor-analyzer weekly Mon 8am, investor-newsletter biweekly Fri 9am). pitch-deck-updater has no own task — it is chained by investor-analyzer.
-- **`scripts/setup-secrets.ps1`** — captures Apify API token + Actor ID + the user's LinkedIn profile URL + `li_at` cookie + optional company-roster Actor ID + optional pitch-deck Drive pointer. Validates ALL required Apify values in one round-trip (header auth; `/v2/users/me` for token, single Actor run against the user's own profile for Actor + cookie). Writes `~/.nightingale/secrets.json` (schema v4) with restricted ACL via an atomic ACL-first write.
+- **Agent scheduling = GitHub Actions on a self-hosted runner (Phase 3).** The eight agent schedules live in `.github/workflows/*.yml` (cron in **UTC** — assumes US Eastern with a documented ±1h DST drift; biweekly newsletter = weekly cron + even-week guard), each `on: schedule` + `workflow_dispatch`, `runs-on: [self-hosted, windows]`, running `claude -p` from `$NIGHTINGALE_VAULT`. Execution stays on the host so local Claude Code auth + claude.ai MCP + the Desktop tree survive; the schedule survives a powered-off machine. pitch-deck-updater + feedback-analyzer get `workflow_dispatch`-only workflows.
+  - **`scripts/install-runner.ps1`** — downloads + registers the GitHub Actions runner as a boot-start Windows service (Automatic), writes the runner `.env` (`NIGHTINGALE_VAULT`), and registers the on-boot `Nightingale-Boot-Catchup` task.
+  - **`scripts/boot-catchup.ps1`** — >24h missed-run backstop. Per-agent cursor + cadence; idempotent `workflow_dispatch` of overdue agents (seeds-then-no-ops on first run). Reads `github_pat`/`github_repo` from secrets.
+  - **`scripts/uninstall-schedule.ps1`** — removes the eight legacy `Nightingale-*` Task Scheduler agents (no double-fire after migration).
+  - **`scripts/install-schedule.ps1`** — DEPRECATED. Prints migration guidance by default; registers the legacy eight Task Scheduler entries only behind `-Legacy` (does NOT survive a powered-off machine). See `06-agent-documentation/github-runner-setup.md`.
+- **`scripts/setup-secrets.ps1`** — captures Apify API token + Actor ID + the user's LinkedIn profile URL + `li_at` cookie + optional company-roster Actor ID + optional pitch-deck Drive pointer. Validates ALL required Apify values in one round-trip (header auth; `/v2/users/me` for token, single Actor run against the user's own profile for Actor + cookie). Also optionally captures a fine-grained GitHub PAT + `owner/repo` (schema v5). Writes `~/.nightingale/secrets.json` (schema v5) with restricted ACL via an atomic ACL-first write. (The UI Settings tab also writes via `scripts/write-secrets.ps1` — stdin, never argv.)
 - **`scripts/run-one-apify-call.ps1`** — per-target worker. Loads secrets, calls Apify Actor once via `Authorization: Bearer` header (token never in URL), polls, writes result JSON atomically via `.tmp` + `Move-Item`. Distinguishes `apify_actor_not_found` (HTTP 404), `apify_rate_limited` (HTTP 429), `cookie_expired` (top-level auth-failure indicators in payload only — never full-JSON substring match), and generic `apify_start_failed` / `apify_fetch_failed` statuses.
 - **`scripts/run-one-apify-company-roster.ps1`** — per-attendee Layer-B worker for daily-brief. Same conventions as the mutual-connections worker; reads the optional `apify_company_roster_actor_id` from secrets v4.
 - **`scripts/start-ui.ps1` + `ui/`** — OPTIONAL local Node.js + React control panel. Loopback-only Express server on `http://localhost:8765`. Renders agent Desktop outputs (brief, signals, intros, re-surfacer, refinements), exposes the generic approval queues with inline Apply/Reject — HubSpot updates, **Pitch Deck Edits**, and **Investor Newsletter** (Approve & create Gmail draft) — and lets the operator trigger any agent on demand. Requires Node 18+ (one-time `npm install`). The chain works identically whether or not the UI is launched. See `ui/README.md`.
 
 ## Secrets file
 
-Lives at `%USERPROFILE%\.nightingale\secrets.json`, schema v4:
+Lives at `%USERPROFILE%\.nightingale\secrets.json`, schema v5:
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "created_at": "...",
   "updated_at": "...",
   "apify_api_token": "...",
@@ -46,13 +50,16 @@ Lives at `%USERPROFILE%\.nightingale\secrets.json`, schema v4:
   "linkedin_li_at": "...",
   "apify_company_roster_actor_id": "...",
   "pitch_deck_drive_file_id": "...",
-  "pitch_deck_drive_url": "..."
+  "pitch_deck_drive_url": "...",
+  "github_pat": "...",
+  "github_repo": "owner/repo"
 }
 ```
 
-The last three fields are OPTIONAL and omitted entirely when the operator skips their prompts at setup-secrets time:
+The last five fields are OPTIONAL and omitted entirely when the operator skips their prompts at setup-secrets time:
 - `apify_company_roster_actor_id` — presence enables the daily-brief Layer-B persona-roster lookup via Apify; absence makes daily-brief fall back to WebSearch.
 - `pitch_deck_drive_file_id` (+ optional `pitch_deck_drive_url`) — the Google Slides deck pointer for `pitch-deck-updater`. Absence makes pitch-deck-updater write a `DECK_POINTER_MISSING` notice and skip cleanly. Omit-when-empty (never an empty string) so the "is configured" probe stays unambiguous.
+- `github_pat` (+ `github_repo`, schema v5) — fine-grained GitHub PAT with **Actions: read/write** on the named `owner/repo`. Presence enables UI "Run now" in Docker/container mode (fires `workflow_dispatch` to the self-hosted runner instead of spawning the host CLI) and the `boot-catchup.ps1` >24h backstop. Read server-side only for the Authorization header — never returned to the browser (Settings is presence-only). Omit-when-empty.
 
 Restricted ACL set by setup-secrets.ps1 (only current user has access). The file lives outside the repo and cannot be git-add'd. The `.gitignore` excludes `.nightingale/` defense-in-depth.
 
@@ -60,6 +67,7 @@ Restricted ACL set by setup-secrets.ps1 (only current user has access). The file
 
 - **Windows-only.** All paths use `$env:USERPROFILE` / `~` semantics that resolve to `C:\Users\{user}\...`. Do NOT write `.sh` scripts, do not add macOS/Linux dispatch branches, do not reference `bash`, `launchd`, or `cron`. Use PowerShell for every shell operation.
 - **Never `schtasks /sd YYYY-MM-DD`.** That flag is locale-dependent and breaks for non-en-US users. Always use `Register-ScheduledTask` with a `[datetime]`-parsed `-At` argument.
+- **Agent scheduling lives in GitHub Actions (Phase 3), not Task Scheduler.** `.github/workflows/*.yml` use GitHub cron (**UTC**, assumes US Eastern, ±1h DST drift) on a self-hosted runner. `install-schedule.ps1` is deprecated (legacy path behind `-Legacy`). The intro-finder per-target Apify one-shots stay on Task Scheduler (created dynamically). **PowerShell scripts must be ASCII-only** — PS 5.1 mis-parses non-ASCII (em-dashes/arrows) in BOM-less files. See `06-agent-documentation/github-runner-setup.md`.
 - **Never put the Apify token in a URL query string.** Always use `-Headers @{Authorization = "Bearer $token"}` so the token does not leak into `Get-CimInstance Win32_Process` / process command-lines.
 - **Never log the LinkedIn `li_at` cookie value.** Only the worker script reads it; agents only check file existence.
 - **Never pattern-guess emails** (inherits from the 2026-05-06 5-bounce incident). Buying-group commercial emits no emails; academic emits only emails scraped verbatim from publicly-served pages.

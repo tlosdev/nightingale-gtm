@@ -1,0 +1,29 @@
+# Nightingale — investor-analyzer (self-hosted GitHub Actions runner)
+#
+# GitHub cron is UTC only and does NOT follow local DST. Time assumes US Eastern
+# STANDARD time (EST, UTC-5); during EDT it fires 1h later local (see
+# daily-brief.yml for the full DST note). Chains pitch-deck-updater inside the
+# same `claude -p` invocation.
+#
+# Local: Mon 08:00 ET  →  UTC 13:00
+name: Nightingale Investor Analyzer
+on:
+  schedule:
+    - cron: '0 13 * * 1'
+  workflow_dispatch:
+concurrency:
+  group: nightingale-investor-analyzer
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 30
+    steps:
+      - name: Run investor-analyzer
+        shell: powershell
+        run: |
+          $vault = $env:NIGHTINGALE_VAULT
+          if ([string]::IsNullOrWhiteSpace($vault)) { Write-Error 'NIGHTINGALE_VAULT is not set on this runner. Re-run scripts/install-runner.ps1.'; exit 1 }
+          if (-not (Test-Path $vault)) { Write-Error "NIGHTINGALE_VAULT path not found: $vault"; exit 1 }
+          Set-Location $vault
+          claude -p "RUN investor-analyzer"

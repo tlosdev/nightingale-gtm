@@ -17,6 +17,9 @@ export interface SecretsHealth {
   has_apify_company_roster_actor_id: boolean;
   has_pitch_deck_drive_file_id: boolean;
   has_pitch_deck_drive_url: boolean;
+  // Schema v5: GitHub workflow_dispatch (UI Run-now in container mode + boot-catchup).
+  has_github_pat: boolean;
+  has_github_repo: boolean;
   updated_at: string | null;
 }
 
@@ -31,6 +34,8 @@ function emptyHealth(exists: boolean): SecretsHealth {
     has_apify_company_roster_actor_id: false,
     has_pitch_deck_drive_file_id: false,
     has_pitch_deck_drive_url: false,
+    has_github_pat: false,
+    has_github_repo: false,
     updated_at: null,
   };
 }
@@ -61,6 +66,8 @@ export function readSecretsHealth(): SecretsHealth {
     has_apify_company_roster_actor_id: has('apify_company_roster_actor_id'),
     has_pitch_deck_drive_file_id: has('pitch_deck_drive_file_id'),
     has_pitch_deck_drive_url: has('pitch_deck_drive_url'),
+    has_github_pat: has('github_pat'),
+    has_github_repo: has('github_repo'),
     updated_at: typeof parsed.updated_at === 'string' ? (parsed.updated_at as string) : null,
   };
 }

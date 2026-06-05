@@ -38,7 +38,12 @@ For a reproducible "pull-and-run" dashboard:
 
 This builds a multi-stage image (Node 20 build → slim runtime) and starts it detached, publishing **only** to the host's `127.0.0.1:8765` (never the LAN). It bind-mounts your `~/Desktop/nightingale-signals`, `~/.nightingale`, and the repo's `.claude/agents` read-only.
 
-**Honesty note — what Docker does and does NOT reproduce.** Docker reproduces the **UI + the agent definitions** (static text), not the **agent runtime**. The container is a Linux box with no Claude Code CLI, no claude.ai MCP authorization, and no PowerShell — so it runs in **container mode**: it renders the whole dashboard from the mounted output tree, but **agent runs, approval Apply/Reject, and secrets editing are disabled** (the UI shows a banner and greys out those buttons; the API returns `503 container_mode`). Use the native launcher (`start-ui.ps1`, no `-Docker`) on the host for those actions. A future phase wires a GitHub self-hosted-runner `workflow_dispatch` path so the container can trigger host runs indirectly.
+**Honesty note — what Docker does and does NOT reproduce.** Docker reproduces the **UI + the agent definitions** (static text), not the **agent runtime**. The container is a Linux box with no Claude Code CLI, no claude.ai MCP authorization, and no PowerShell — so it runs in **container mode**: it renders the whole dashboard from the mounted output tree.
+
+In container mode, what works depends on Phase 3:
+
+- **Agent "Run now"** — works **if** you've added a GitHub PAT + repo in Settings (schema v5). The container can't spawn the host CLI, so it fires a GitHub **`workflow_dispatch`** to your self-hosted runner (Phase 3), which runs `claude -p` on the host with full local auth. The button reads "Dispatch run" and links you to the repo's Actions tab. Without a PAT configured it returns `503 dispatch_not_configured` with setup guidance.
+- **Approval Apply/Reject and secrets editing** — still disabled in container mode (they need host PowerShell / the host CLI directly). The UI greys those out; the API returns `503 container_mode`. Use the native launcher (`start-ui.ps1`, no `-Docker`) on the host for those.
 
 Stop / manage from `ui/`: `docker compose logs -f`, `docker compose down`. If your output or secrets live outside `%USERPROFILE%`, edit the `source:` paths in `ui/docker-compose.yml`.
 
@@ -55,7 +60,7 @@ Stop / manage from `ui/`: `docker compose logs -f`, `docker compose down`. If yo
 |---|---|
 | `/` (Dashboard) | **Unified, category-tagged approval queue** — HubSpot updates, Pitch Deck Edits, and the Investor Newsletter merged into one list, each row carrying a colored category chip, with a filter-by-category control. Per-row Apply/Reject routes to the right backend automatically (`claude -p "apply hubspot updates N from DATE"` / `apply pitch-deck updates N from DATE` / `approve newsletter draft from DATE`). Below the queue: today's **re-surfaced contacts** and the **daily brief**, rich-rendered. The sidebar badge is the aggregate count across all three queues. |
 | `/agents` | One card per agent: scheduled-task status, last-run time, most recent output timestamp, **Run now**, and **View output** (renders that agent's latest Desktop markdown). Run-now is **asynchronous** — it returns a run id immediately and links you to the Logs tab to watch it stream. |
-| `/settings` | Editable credentials form (Apify token, Actor IDs, LinkedIn validation URL + `li_at` cookie, optional company-roster Actor, optional pitch-deck Drive pointer). Each field shows Configured ✓ / Not set; Save writes the changed fields only. Below: claude.ai MCP connector status with re-auth instructions (the browser can't drive that OAuth). |
+| `/settings` | Editable credentials form (Apify token, Actor IDs, LinkedIn validation URL + `li_at` cookie, optional company-roster Actor, optional pitch-deck Drive pointer, optional **GitHub PAT + repo** for container-mode Run-now + the boot-catchup backstop). Each field shows Configured ✓ / Not set; Save writes the changed fields only. Below: claude.ai MCP connector status with re-auth instructions (the browser can't drive that OAuth). |
 | `/logs` | Recent runs (Run-now + Apply/Reject) with live status (running / ok / error / timeout) and a streaming log tail per run, plus the `Nightingale-*` scheduled-task table (state / last run / next run / last result). |
 
 ## How it stays safe

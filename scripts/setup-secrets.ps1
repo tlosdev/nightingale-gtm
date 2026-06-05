@@ -6,7 +6,7 @@
     (powers the daily-brief Layer-B persona-roster lookup), and an OPTIONAL
     pitch-deck Google Drive pointer (powers the pitch-deck-updater agent).
     Validates all REQUIRED fields against Apify in one round-trip, then writes
-    ~/.nightingale/secrets.json (schema v4) with a restricted ACL.
+    ~/.nightingale/secrets.json (schema v5) with a restricted ACL.
 
 .DESCRIPTION
     One-time per-user setup for the intro-finder + daily-brief agents. Re-run
@@ -121,6 +121,9 @@ if (Test-Path $secretsPath) {
         if ($existing.schema_version -lt 4) {
             Write-Host "Schema v3 -> v4 upgrade: optional prompt for pitch_deck_drive_file_id (powers pitch-deck-updater)."
         }
+        if ($existing.schema_version -lt 5) {
+            Write-Host "Schema v4 -> v5 upgrade: optional prompt for github_pat + github_repo (powers UI Run-now via GitHub workflow_dispatch from Docker/container mode + the boot-catchup backstop)."
+        }
     } catch {
         Write-Warning "Existing secrets file is unreadable ($($_.Exception.Message)); will overwrite."
         $existing = $null
@@ -147,6 +150,7 @@ $promptValidationUrl = $true
 $promptLiAt         = $true
 $promptRosterActor  = $true
 $promptDeckPointer  = $true
+$promptGithub       = $true
 
 if ($existing) {
     if ($existing.apify_api_token) {
@@ -181,6 +185,12 @@ if ($existing) {
         $promptDeckPointer = ($resp -match '^[Yy]')
     } else {
         Write-Host "No pitch_deck_drive_file_id on file (pre-v4 secrets); will offer optional prompt."
+    }
+    if ($existing.github_pat -or $existing.github_repo) {
+        $resp = Read-Host "Overwrite existing github_pat / github_repo (UI workflow_dispatch + boot-catchup)? [y/N]"
+        $promptGithub = ($resp -match '^[Yy]')
+    } else {
+        Write-Host "No github_pat / github_repo on file (pre-v5 secrets); will offer optional prompt."
     }
 }
 
@@ -344,6 +354,50 @@ if ($promptDeckPointer) {
     }
 }
 
+# --- Prompt: GitHub PAT + repo (OPTIONAL — UI workflow_dispatch + boot-catchup) --
+# Powers two Phase-3 features:
+#   1. The dashboard "Run now" button when the UI runs in Docker/container mode
+#      (the container can't spawn the host claude CLI, so it dispatches a GitHub
+#      workflow to the self-hosted runner instead).
+#   2. scripts/boot-catchup.ps1, the >24h missed-run backstop, which dispatches
+#      overdue agents on boot.
+# Not needed at all if you only ever run the UI natively and rely on GitHub's own
+# same-day queue catch-up. Stored as-is; the PAT VALUE is never echoed back by the
+# UI (presence-only).
+$githubPat  = if ($existing) { $existing.github_pat } else { $null }
+$githubRepo = if ($existing) { $existing.github_repo } else { $null }
+if ($promptGithub) {
+    Write-Host ''
+    Write-Host 'OPTIONAL — GitHub PAT + repo (for UI Run-now in Docker mode + boot-catchup)'
+    Write-Host '---'
+    Write-Host 'Create a FINE-GRAINED personal access token scoped to ONLY your Nightingale'
+    Write-Host 'repo with Repository permission "Actions: Read and write":'
+    Write-Host '  https://github.com/settings/personal-access-tokens/new'
+    Write-Host ''
+    Write-Host 'Then give the repo as owner/repo, e.g. ben-nightingale/Nightingale'
+    Write-Host '(or the mirror tlosdev/nightingale-gtm).'
+    Write-Host ''
+    Write-Host 'Leave the token blank to skip — native Run-now + GitHub same-day queue catch-up'
+    Write-Host 'still work without it.'
+    Write-Host ''
+    $patInput = (Read-MaskedString 'Paste GitHub fine-grained PAT (input hidden, or press Enter to skip)').Trim()
+    if ([string]::IsNullOrWhiteSpace($patInput)) {
+        $githubPat  = $null
+        $githubRepo = $null
+        Write-Host 'Skipped. UI Run-now will be host-only; boot-catchup backstop disabled.'
+    } else {
+        $githubPat = $patInput
+        $repoInput = (Read-Host 'GitHub repo as owner/repo').Trim()
+        if ($repoInput -notmatch '^[\w.-]+/[\w.-]+$') {
+            Write-Error "GitHub repo must look like owner/repo. Got: '$repoInput'. Aborting (secrets NOT written)."
+            exit 1
+        }
+        $githubRepo = $repoInput
+        Write-Host 'GitHub PAT + repo recorded. Not validated at setup time (avoids a live API call);'
+        Write-Host 'a failed dispatch will surface in the UI / boot-catchup output.'
+    }
+}
+
 # --- Validate: Apify API token via /v2/users/me -----------------------------
 Write-Host ''
 Write-Host 'Validating Apify API token...'
@@ -472,12 +526,12 @@ if ($flagged) {
 }
 Write-Host 'Cookie + Actor validation OK.'
 
-# --- Write secrets.json (schema v4) -----------------------------------------
+# --- Write secrets.json (schema v5) -----------------------------------------
 $createdAt = if ($existing -and $existing.created_at) { $existing.created_at } else { (Get-Date -Format 'yyyy-MM-dd') }
 $updatedAt = (Get-Date -Format 'yyyy-MM-dd')
 
 $secrets = [ordered]@{
-    schema_version       = 4
+    schema_version       = 5
     created_at           = $createdAt
     updated_at           = $updatedAt
     apify_api_token      = $apifyToken
@@ -499,6 +553,13 @@ if (-not [string]::IsNullOrWhiteSpace($deckFileId)) {
     if (-not [string]::IsNullOrWhiteSpace($deckUrl)) {
         $secrets['pitch_deck_drive_url'] = $deckUrl
     }
+}
+# Only include the GitHub PAT + repo when both were provided. Same omit-when-empty
+# discipline so the UI's "is dispatch configured" probe (has_github_pat &&
+# has_github_repo) stays unambiguous.
+if (-not [string]::IsNullOrWhiteSpace($githubPat) -and -not [string]::IsNullOrWhiteSpace($githubRepo)) {
+    $secrets['github_pat']  = $githubPat
+    $secrets['github_repo'] = $githubRepo
 }
 
 $json = $secrets | ConvertTo-Json -Depth 5
@@ -563,7 +624,7 @@ if (Test-Path $sentinel) {
 }
 
 Write-Host ''
-Write-Host "Done. Secrets written to: $secretsPath  (schema v4)"
+Write-Host "Done. Secrets written to: $secretsPath  (schema v5)"
 Write-Host 'Next intro-finder run (Sun-Thu 7am) will use these credentials.'
 if (-not [string]::IsNullOrWhiteSpace($rosterActorId)) {
     Write-Host 'Daily-brief Layer-B will use the configured company-roster Actor.'
@@ -574,4 +635,9 @@ if (-not [string]::IsNullOrWhiteSpace($deckFileId)) {
     Write-Host 'pitch-deck-updater will read the configured Google Drive deck (read-only).'
 } else {
     Write-Host 'pitch-deck-updater has no deck pointer; it will write a DECK_POINTER_MISSING notice until set.'
+}
+if (-not [string]::IsNullOrWhiteSpace($githubPat) -and -not [string]::IsNullOrWhiteSpace($githubRepo)) {
+    Write-Host "GitHub dispatch configured ($githubRepo): UI Run-now works in Docker mode + boot-catchup backstop is active."
+} else {
+    Write-Host 'No GitHub PAT/repo: UI Run-now is host-only and the boot-catchup backstop is disabled (GitHub same-day queue catch-up still works).'
 }

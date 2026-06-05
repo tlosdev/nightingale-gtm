@@ -1,0 +1,30 @@
+# Nightingale — hubspot-manager (self-hosted GitHub Actions runner)
+#
+# GitHub cron is UTC only and does NOT follow local DST. Time assumes US Eastern
+# STANDARD time (EST, UTC-5); during EDT it fires 1h later local (see
+# daily-brief.yml for the full DST note). Because this is the only DAILY agent
+# the day-of-week never matters; 23:00 ET maps to 04:00 UTC the NEXT calendar
+# day, which is still "every day".
+#
+# Local: every day 23:00 ET  →  UTC 04:00
+name: Nightingale HubSpot Manager
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+concurrency:
+  group: nightingale-hubspot-manager
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 30
+    steps:
+      - name: Run hubspot-manager
+        shell: powershell
+        run: |
+          $vault = $env:NIGHTINGALE_VAULT
+          if ([string]::IsNullOrWhiteSpace($vault)) { Write-Error 'NIGHTINGALE_VAULT is not set on this runner. Re-run scripts/install-runner.ps1.'; exit 1 }
+          if (-not (Test-Path $vault)) { Write-Error "NIGHTINGALE_VAULT path not found: $vault"; exit 1 }
+          Set-Location $vault
+          claude -p "nightly hubspot manage"

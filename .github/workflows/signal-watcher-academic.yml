@@ -1,0 +1,29 @@
+# Nightingale — signal-watcher-academic (self-hosted GitHub Actions runner)
+#
+# GitHub cron is UTC only and does NOT follow local DST. Time assumes US Eastern
+# STANDARD time (EST, UTC-5); during EDT it fires 1h later local (see
+# daily-brief.yml for the full DST note). The chained buying-group-finder runs
+# inside the same `claude -p` invocation.
+#
+# Local: Mon 07:00 ET  →  UTC 12:00
+name: Nightingale Academic Sweep
+on:
+  schedule:
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+concurrency:
+  group: nightingale-academic-sweep
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 30
+    steps:
+      - name: Run academic sweep
+        shell: powershell
+        run: |
+          $vault = $env:NIGHTINGALE_VAULT
+          if ([string]::IsNullOrWhiteSpace($vault)) { Write-Error 'NIGHTINGALE_VAULT is not set on this runner. Re-run scripts/install-runner.ps1.'; exit 1 }
+          if (-not (Test-Path $vault)) { Write-Error "NIGHTINGALE_VAULT path not found: $vault"; exit 1 }
+          Set-Location $vault
+          claude -p "weekly academic sweep"

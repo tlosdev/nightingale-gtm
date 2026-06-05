@@ -1,0 +1,43 @@
+# Nightingale — investor-newsletter (self-hosted GitHub Actions runner)
+#
+# GitHub cron is UTC only and does NOT follow local DST. Time assumes US Eastern
+# STANDARD time (EST, UTC-5); during EDT it fires 1h later local (see
+# daily-brief.yml for the full DST note).
+#
+# BIWEEKLY: cron has no native every-other-week. We fire WEEKLY and gate on an
+# even/odd week guard anchored to a fixed date (2026-01-02). This anchor differs
+# from the old Task Scheduler cadence (which anchored to registration time), so
+# the "which Friday" may shift by one cycle on first cutover — acceptable for a
+# biweekly investor update. A manual workflow_dispatch ALWAYS runs (skips guard).
+#
+# Local: Fri 09:00 ET  →  UTC 14:00 (every other week)
+name: Nightingale Investor Newsletter
+on:
+  schedule:
+    - cron: '0 14 * * 5'
+  workflow_dispatch:
+concurrency:
+  group: nightingale-investor-newsletter
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 20
+    steps:
+      - name: Run investor-newsletter (biweekly guard)
+        shell: powershell
+        run: |
+          $vault = $env:NIGHTINGALE_VAULT
+          if ([string]::IsNullOrWhiteSpace($vault)) { Write-Error 'NIGHTINGALE_VAULT is not set on this runner. Re-run scripts/install-runner.ps1.'; exit 1 }
+          if (-not (Test-Path $vault)) { Write-Error "NIGHTINGALE_VAULT path not found: $vault"; exit 1 }
+          # Biweekly cadence: even-week guard, anchored to a fixed Friday baseline.
+          # workflow_dispatch always proceeds.
+          $manual = ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch')
+          $anchor = [datetime]'2026-01-02'
+          $weeks  = [math]::Floor(((Get-Date) - $anchor).TotalDays / 7)
+          if (-not $manual -and ($weeks % 2 -ne 0)) {
+            Write-Host "Off-week (week index $weeks) — skipping biweekly newsletter this Friday."
+            exit 0
+          }
+          Set-Location $vault
+          claude -p "RUN investor-newsletter"
