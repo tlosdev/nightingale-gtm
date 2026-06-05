@@ -64,7 +64,7 @@
 #>
 param(
     [Parameter(Mandatory = $true)] [string]$RepoUrl,
-    [Parameter(Mandatory = $true)] [string]$Token,
+    [string]$Token,
     [string]$InstallDir = 'C:\actions-runner-nightingale',
     [string]$RunnerVersion = '2.323.0',
     [string]$Name = "$($env:COMPUTERNAME)-nightingale"
@@ -80,6 +80,18 @@ function Test-Admin {
 
 if (-not (Test-Admin)) {
     Write-Error "This script must run from an ELEVATED PowerShell (Run as administrator) -- installing a Windows service requires it."
+    exit 1
+}
+
+# Token resolution: prefer the -Token parameter; otherwise fall back to the
+# NIGHTINGALE_RUNNER_TOKEN environment variable. The activate-runner.ps1 wrapper
+# uses the env-var path so the short-lived registration token never appears on a
+# command line / process listing. The token is consumed here and never logged.
+if ([string]::IsNullOrWhiteSpace($Token)) {
+    $Token = $env:NIGHTINGALE_RUNNER_TOKEN
+}
+if ([string]::IsNullOrWhiteSpace($Token)) {
+    Write-Error "No runner registration token. Pass -Token <token>, or set NIGHTINGALE_RUNNER_TOKEN, or use scripts/activate-runner.ps1 which fetches one for you."
     exit 1
 }
 

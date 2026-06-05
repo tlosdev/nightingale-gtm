@@ -57,18 +57,67 @@ If you are **not** in US Eastern, edit the `cron:` line in each workflow (or jus
 rely on `workflow_dispatch` + boot-catchup). There is no per-user timezone in
 GitHub cron.
 
-## Setup
+## ⚠️ Which repo does the runner attach to? (read before activating)
+
+GitHub Actions **only runs workflows that exist in the repo on GitHub.** Attach
+the runner to **the GitHub repo that hosts these `.github/workflows/*.yml`
+files** — for this portable mirror that is **`tlosdev/nightingale-gtm`** (or your
+own fork of it). The optional PAT (step 3 / boot-catchup) must point at the same
+repo. The examples below use `tlosdev/nightingale-gtm`; substitute your fork if
+you cloned one.
+
+## Quick activation (recommended)
+
+`scripts/activate-runner.ps1` does the whole migration in one command — it
+self-elevates (UAC), fetches a runner registration token via the `gh` CLI,
+installs the runner service, removes the legacy Task Scheduler agents, and prints
+a verification summary. The registration token is handed to the installer through
+the process **environment block**, never a command line.
+
+```powershell
+# From the repo root. No need to pre-elevate or mint a token yourself.
+.\scripts\activate-runner.ps1
+```
+
+Defaults: `-RepoUrl https://github.com/tlosdev/nightingale-gtm`,
+`-GhAccount tlosdev` (the gh account with admin on that repo, used to mint the
+token). Pass `-RepoUrl`/`-GhAccount` if you cloned a fork. Useful switches:
+
+```powershell
+.\scripts\activate-runner.ps1 -ConfigureSecrets     # also run setup-secrets.ps1 (add the GitHub PAT)
+.\scripts\activate-runner.ps1 -Token 'AXXXX...'     # use a token you minted yourself (run elevated)
+.\scripts\activate-runner.ps1 -SkipLegacyUninstall  # keep the old tasks (almost never what you want)
+```
+
+Prerequisites for the auto-token path: the GitHub CLI (`gh`) installed and the
+`-GhAccount` authenticated with **admin** on the repo (`gh auth login`). If `gh`
+isn't available, mint a token yourself (below) and pass `-Token`.
+
+After it finishes, jump to [Verify](#verify).
+
+---
+
+If you'd rather run each step by hand, follow the manual setup below instead.
+
+## Manual setup
 
 ### 1. Install the runner (one time, elevated PowerShell)
 
-Get a **runner registration token** from GitHub: your repo →
-**Settings → Actions → Runners → New self-hosted runner** → copy the token in the
-`./config.cmd ... --token XXXX` line (short-lived, ~1h, single-use — *not* a PAT).
+Get a **runner registration token** from GitHub — either from the web UI:
+**your repo → Settings → Actions → Runners → New self-hosted runner** → copy the
+token in the `./config.cmd ... --token XXXX` line (short-lived, ~1h, single-use —
+*not* a PAT). Or from the terminal:
+
+```powershell
+gh auth switch --user tlosdev
+gh api -X POST repos/tlosdev/nightingale-gtm/actions/runners/registration-token --jq .token
+gh auth switch --user <your-default-account>   # restore
+```
 
 ```powershell
 # Run from an ELEVATED PowerShell (installing a service needs admin)
 .\scripts\install-runner.ps1 `
-    -RepoUrl 'https://github.com/ben-nightingale/Nightingale' `
+    -RepoUrl 'https://github.com/tlosdev/nightingale-gtm' `
     -Token   'AXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
 ```
 
@@ -77,7 +126,9 @@ installs it as a Windows service (Automatic start = starts on boot), writes
 `NIGHTINGALE_VAULT=<repo>` into the runner's `.env` (so jobs `Set-Location` to your
 real vault), and registers the `Nightingale-Boot-Catchup` on-boot task.
 
-> The mirror team uses `-RepoUrl 'https://github.com/tlosdev/nightingale-gtm'`.
+> `install-runner.ps1` also accepts the token via the `NIGHTINGALE_RUNNER_TOKEN`
+> environment variable (this is how `activate-runner.ps1` keeps it off the command
+> line). The `-Token` parameter takes precedence.
 
 ### 2. Migrate off the old Task Scheduler agents
 
@@ -133,7 +184,7 @@ Two layers:
 ```powershell
 Get-Service 'actions.runner.*'                 # Running, StartType Automatic
 Get-ScheduledTask -TaskName 'Nightingale-*'    # only Nightingale-Boot-Catchup (+ dynamic intro one-shots)
-gh workflow run daily-brief.yml --repo <owner/repo> --ref main   # then check the Actions tab + Desktop output
+gh workflow run daily-brief.yml --repo tlosdev/nightingale-gtm --ref main   # then check the Actions tab + Desktop output
 ```
 
 ## Caveats
