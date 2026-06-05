@@ -104,6 +104,77 @@ export interface NightingaleTaskInfo {
   last_task_result: number | null;
 }
 
+export interface RunnerStatus {
+  runner_present: boolean;
+  runner_name: string | null;
+  runner_status: string | null;   // 'Running' | 'Stopped' | ...
+  runner_starttype: string | null; // 'Automatic' | 'Manual' | 'Disabled' | ...
+  boot_catchup: boolean;           // Nightingale-Boot-Catchup task registered?
+  legacy_agent_tasks: string[];    // any of the 8 legacy agent tasks still registered
+}
+
+// The eight legacy agent Task Scheduler entries (Phase 3 migrates off these).
+// Nightingale-Boot-Catchup and the dynamic intro-finder one-shots are NOT in
+// this list — their presence is normal post-migration.
+const LEGACY_AGENT_TASKS = [
+  'Nightingale-Daily-Brief-Morning',
+  'Nightingale-Commercial-Sweep',
+  'Nightingale-Academic-Sweep',
+  'Nightingale-Intro-Finder-Morning',
+  'Nightingale-Gmail-Resurfacer-Morning',
+  'Nightingale-HubSpot-Manager-Nightly',
+  'Nightingale-Investor-Analyzer-Weekly',
+  'Nightingale-Investor-Newsletter-Biweekly',
+];
+
+/**
+ * Detect the Phase 3 scheduling state on this host: is the GitHub Actions
+ * self-hosted runner installed + running, is the on-boot catch-up task present,
+ * and are any legacy Task Scheduler agents still around (which would double-fire)?
+ * Returns null if PowerShell can't be invoked at all (non-Windows / container).
+ */
+export async function getRunnerStatus(): Promise<RunnerStatus | null> {
+  // Fixed PowerShell — no interpolation.
+  const legacyList = LEGACY_AGENT_TASKS.map((n) => `'${n}'`).join(',');
+  const script = `
+    $svc = Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $startType = $null
+    if ($svc) { try { $startType = "$($svc.StartType)" } catch { $startType = $null } }
+    $legacyNames = @(${legacyList})
+    # One enumeration of all Nightingale-* tasks, then partition in-memory --
+    # cheaper than N per-name CIM lookups (which are slow on a cold call).
+    $allTasks = @(Get-ScheduledTask -TaskName 'Nightingale-*' -ErrorAction SilentlyContinue | ForEach-Object { $_.TaskName })
+    $legacy = @($allTasks | Where-Object { $legacyNames -contains $_ })
+    $boot = [bool]($allTasks -contains 'Nightingale-Boot-Catchup')
+    [PSCustomObject]@{
+      runner_present     = [bool]$svc
+      runner_name        = if ($svc) { $svc.Name } else { $null }
+      runner_status      = if ($svc) { "$($svc.Status)" } else { $null }
+      runner_starttype   = $startType
+      boot_catchup       = $boot
+      legacy_agent_tasks = @($legacy)
+    } | ConvertTo-Json -Depth 3 -Compress
+  `;
+  const result = await runFixedPs(script);
+  if (result.exitCode !== 0) return null;
+  try {
+    const parsed = JSON.parse(result.stdout) as Partial<RunnerStatus>;
+    // ConvertTo-Json may emit a scalar/absent for a 0- or 1-length array; normalize.
+    const legacyRaw = (parsed as { legacy_agent_tasks?: unknown }).legacy_agent_tasks;
+    const legacy = Array.isArray(legacyRaw) ? legacyRaw : legacyRaw ? [legacyRaw] : [];
+    return {
+      runner_present: Boolean(parsed.runner_present),
+      runner_name: parsed.runner_name ?? null,
+      runner_status: parsed.runner_status ?? null,
+      runner_starttype: parsed.runner_starttype ?? null,
+      boot_catchup: Boolean(parsed.boot_catchup),
+      legacy_agent_tasks: legacy.map((s) => String(s)),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface WriteSecretsResult {
   ok: boolean;
   written_fields?: string[];

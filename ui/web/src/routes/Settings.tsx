@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, SecretsHealth, SecretsUpdate } from '../lib/api';
+import { api, SecretsHealth, SecretsUpdate, SchedulingStatus, SchedulingState } from '../lib/api';
 import { useContainerMode, CONTAINER_DISABLED_HINT } from '../lib/useRunMode';
 
 type FieldKey = keyof SecretsUpdate;
@@ -31,6 +31,7 @@ export default function Settings() {
   const containerMode = useContainerMode();
   const secrets = useQuery({ queryKey: ['settings', 'secrets'], queryFn: api.settingsSecrets });
   const connectors = useQuery({ queryKey: ['settings', 'connectors'], queryFn: api.settingsConnectors });
+  const scheduling = useQuery({ queryKey: ['settings', 'scheduling'], queryFn: api.settingsScheduling });
 
   const [drafts, setDrafts] = useState<Partial<Record<FieldKey, string>>>({});
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -156,6 +157,11 @@ export default function Settings() {
       {/* ===== Connections (claude.ai MCP) ===== */}
       <section>
         <h2 className="text-lg font-medium mb-3">Connections</h2>
+
+        {/* Agent scheduling — prompt to activate the self-hosted runner, in the
+            same flow as attaching the MCP connectors + credentials. */}
+        <SchedulingCard status={scheduling.data} loading={scheduling.isLoading} />
+
         <p className="text-sm text-gray-500 mb-3">
           The agents reach Gmail, Calendar, HubSpot, Drive, Apollo, and ClinicalTrials.gov through claude.ai MCP
           connectors. Those use interactive OAuth that a browser can't complete — connect or re-authorize them in
@@ -196,6 +202,107 @@ export default function Settings() {
           </div>
         </details>
       </section>
+    </div>
+  );
+}
+
+// ===== Agent scheduling card =====
+// Surfaces the Phase 3 self-hosted runner state and prompts activation when the
+// agents aren't scheduled. Activation itself is a host PowerShell command
+// (scripts/activate-runner.ps1) — the loopback UI can't run it because it needs
+// UAC elevation, the same reason the MCP connectors are instruction-only.
+
+interface SchedulingMeta {
+  tone: 'good' | 'warn' | 'bad' | 'muted';
+  pill: string;
+  headline: string;
+  detail: string;
+  showActivate: boolean;
+}
+
+function schedulingMeta(s: SchedulingState): SchedulingMeta {
+  switch (s) {
+    case 'active':
+      return { tone: 'good', pill: '✓ Active', headline: 'Agents are scheduled on the self-hosted runner.', detail: 'The GitHub Actions runner service is running with Automatic (boot) start — schedules survive a reboot.', showActivate: false };
+    case 'stopped':
+      return { tone: 'warn', pill: '⚠ Runner stopped', headline: 'The runner is installed but its service is stopped.', detail: 'Agents will not fire until it is running. Start it (elevated): Start-Service \'actions.runner.*\' — or re-run the activator.', showActivate: true };
+    case 'conflict':
+      return { tone: 'warn', pill: '⚠ Double-firing', headline: 'Both the runner AND legacy Task Scheduler agents are present.', detail: 'Every agent will fire twice. Remove the legacy tasks (elevated): .\\scripts\\uninstall-schedule.ps1', showActivate: false };
+    case 'legacy':
+      return { tone: 'warn', pill: '⚠ Legacy scheduler', headline: 'Agents run on the old Windows Task Scheduler (no runner).', detail: 'That path does NOT survive a powered-off machine. Upgrade to the GitHub Actions runner below.', showActivate: true };
+    case 'inactive':
+      return { tone: 'bad', pill: '⚠ Not scheduled', headline: 'The agents are not on any schedule yet.', detail: 'Nothing will run automatically until you activate the self-hosted runner.', showActivate: true };
+    default:
+      return { tone: 'muted', pill: '— Unknown', headline: 'Scheduling state is unavailable.', detail: '', showActivate: false };
+  }
+}
+
+const TONE_CLASS: Record<SchedulingMeta['tone'], string> = {
+  good: 'border-green-500/30 bg-green-500/5',
+  warn: 'border-amber-500/40 bg-amber-500/5',
+  bad: 'border-red-500/40 bg-red-500/5',
+  muted: 'border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900',
+};
+const PILL_CLASS: Record<SchedulingMeta['tone'], string> = {
+  good: 'text-green-700 dark:text-green-400',
+  warn: 'text-amber-700 dark:text-amber-400',
+  bad: 'text-red-700 dark:text-red-400',
+  muted: 'text-gray-500',
+};
+
+function SchedulingCard({ status, loading }: { status?: SchedulingStatus; loading: boolean }) {
+  if (loading || !status) {
+    return (
+      <div className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-3 mb-4">
+        <div className="text-sm font-medium">Agent scheduling (self-hosted runner)</div>
+        <div className="text-xs text-gray-500 mt-1">{loading ? 'Checking…' : 'Status unavailable.'}</div>
+      </div>
+    );
+  }
+
+  const meta = schedulingMeta(status.state);
+  const repoMissing = status.state !== 'active' && status.github_repo_configured === false;
+
+  return (
+    <div className={`rounded-lg border p-4 mb-4 ${TONE_CLASS[meta.tone]}`}>
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-sm font-medium">Agent scheduling (self-hosted runner)</span>
+        <span className={`text-xs font-medium ${PILL_CLASS[meta.tone]}`}>{meta.pill}</span>
+      </div>
+      <p className="text-sm text-gray-700 dark:text-gray-300">{meta.headline}</p>
+      {(status.message || meta.detail) && (
+        <p className="text-xs text-gray-500 mt-1">{status.message ?? meta.detail}</p>
+      )}
+
+      {meta.showActivate && (
+        <div className="mt-3 text-sm text-gray-700 dark:text-gray-300 space-y-1.5">
+          <p>Activate it from an <strong>elevated PowerShell</strong> on this machine (one-time):</p>
+          <pre className="px-3 py-2 rounded bg-gray-900 text-gray-100 text-xs overflow-x-auto"><code>.\scripts\activate-runner.ps1</code></pre>
+          <p className="text-xs text-gray-500">
+            It requests elevation (UAC), fetches a runner registration token via the <code>gh</code> CLI, installs the
+            runner as a boot-start service, and retires any legacy tasks. Prereq: <code>gh</code> authenticated with admin
+            on the repo that hosts the workflows. Full guide: <code>06-agent-documentation/github-runner-setup.md</code>.
+          </p>
+          <p className="text-xs text-gray-500">
+            The browser can't run this for you — it needs admin elevation (same reason the connectors below are
+            authorized in Claude Code, not here).
+          </p>
+        </div>
+      )}
+
+      {repoMissing && (
+        <p className="text-xs text-amber-700 dark:text-amber-400 mt-2">
+          Tip: also set the GitHub PAT + repo in Credentials above to enable the boot-catchup backstop and container-mode
+          Run-now.
+        </p>
+      )}
+
+      {status.runner?.runner_present && (
+        <p className="text-[11px] text-gray-400 mt-2">
+          Service {status.runner.runner_name} · {status.runner.runner_status} · {status.runner.runner_starttype}
+          {status.runner.boot_catchup ? ' · boot-catchup ✓' : ' · boot-catchup not registered'}
+        </p>
+      )}
     </div>
   );
 }

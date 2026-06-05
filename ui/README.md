@@ -43,7 +43,7 @@ This adds a **Nightingale UI** icon (an indigo "N", matching the favicon) to you
 Desktop. The native shortcut runs `start-ui.ps1` (starts the server, waits for
 health, opens the browser); the icon is generated on demand into
 `scripts/assets/` (git-ignored). Windows-only, no elevation. See
-`06-agent-documentation/desktop-icon-setup.md`.
+`06-agent documentation/desktop-icon-setup.md`.
 
 ## Run in Docker (container mode) — optional
 
@@ -77,7 +77,7 @@ Stop / manage from `ui/`: `docker compose logs -f`, `docker compose down`. If yo
 |---|---|
 | `/` (Dashboard) | **Unified, category-tagged approval queue** — HubSpot updates, Pitch Deck Edits, and the Investor Newsletter merged into one list, each row carrying a colored category chip, with a filter-by-category control. Per-row Apply/Reject routes to the right backend automatically (`claude -p "apply hubspot updates N from DATE"` / `apply pitch-deck updates N from DATE` / `approve newsletter draft from DATE`). Below the queue: today's **re-surfaced contacts** and the **daily brief**, rich-rendered. The sidebar badge is the aggregate count across all three queues. |
 | `/agents` | One card per agent: scheduled-task status, last-run time, most recent output timestamp, **Run now**, and **View output** (renders that agent's latest Desktop markdown). Run-now is **asynchronous** — it returns a run id immediately and links you to the Logs tab to watch it stream. |
-| `/settings` | Editable credentials form (Apify token, Actor IDs, LinkedIn validation URL + `li_at` cookie, optional company-roster Actor, optional pitch-deck Drive pointer, optional **GitHub PAT + repo** for container-mode Run-now + the boot-catchup backstop). Each field shows Configured ✓ / Not set; Save writes the changed fields only. Below: claude.ai MCP connector status with re-auth instructions (the browser can't drive that OAuth). |
+| `/settings` | Editable credentials form (Apify token, Actor IDs, LinkedIn validation URL + `li_at` cookie, optional company-roster Actor, optional pitch-deck Drive pointer, optional **GitHub PAT + repo** for container-mode Run-now + the boot-catchup backstop). Each field shows Configured ✓ / Not set; Save writes the changed fields only. Below, the **Connections** section shows: an **Agent scheduling** card — detects whether the Phase 3 self-hosted runner is active and, if not, prompts you to run `scripts/activate-runner.ps1` (the same instruction-only flow as the connectors, since activation needs host admin) — followed by claude.ai MCP connector status with re-auth instructions (the browser can't drive that OAuth). |
 | `/logs` | Recent runs (Run-now + Apply/Reject) with live status (running / ok / error / timeout) and a streaming log tail per run, plus the `Nightingale-*` scheduled-task table (state / last run / next run / last result). |
 
 ## How it stays safe

@@ -171,6 +171,25 @@ export interface ApprovalsResp {
   };
 }
 
+// Agent scheduling (Phase 3 self-hosted runner) status — Settings → Connections.
+export type SchedulingState = 'active' | 'inactive' | 'legacy' | 'conflict' | 'stopped' | 'unknown';
+export interface RunnerStatusInfo {
+  runner_present: boolean;
+  runner_name: string | null;
+  runner_status: string | null;
+  runner_starttype: string | null;
+  boot_catchup: boolean;
+  legacy_agent_tasks: string[];
+}
+export interface SchedulingStatus {
+  available: boolean;
+  state: SchedulingState;
+  reason?: string;
+  message?: string;
+  github_repo_configured?: boolean;
+  runner: RunnerStatusInfo | null;
+}
+
 // Partial secrets update. All fields optional; optionals may be '' to clear.
 export interface SecretsUpdate {
   apify_api_token?: string;
@@ -242,6 +261,7 @@ export const api = {
   settingsSecretsSave: (partial: SecretsUpdate) =>
     request<SecretsSaveResp>('/api/settings/secrets', { method: 'POST', body: JSON.stringify(partial) }),
   settingsConnectors: () => request<{ connectors: McpStatus[] }>('/api/settings/connectors'),
+  settingsScheduling: () => request<SchedulingStatus>('/api/settings/scheduling'),
 
   pending: () => request<PendingResp>('/api/pending/'),
   pendingApply: (pending_ids: number[] | 'all', run_date: string) =>
