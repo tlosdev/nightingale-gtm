@@ -31,3 +31,6 @@ nightingale-signals/
 ui/node_modules/
 ui/web/dist/
 ui/.vite/
+
+# Generated desktop-icon asset (install-desktop-icon.ps1 regenerates it on demand)
+scripts/assets/

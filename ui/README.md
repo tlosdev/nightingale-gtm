@@ -28,6 +28,23 @@ That script will:
 
 To stop: `Ctrl+C` in the terminal that runs the script.
 
+## Desktop icon — one-click launch (optional)
+
+To open the dashboard from a Desktop double-click instead of a terminal command:
+
+```powershell
+.\scripts\install-desktop-icon.ps1            # native launcher shortcut
+.\scripts\install-desktop-icon.ps1 -Docker    # shortcut that launches container mode
+.\scripts\install-desktop-icon.ps1 -UrlOnly   # plain .url, for an already-running server
+.\scripts\install-desktop-icon.ps1 -Remove    # remove the shortcut
+```
+
+This adds a **Nightingale UI** icon (an indigo "N", matching the favicon) to your
+Desktop. The native shortcut runs `start-ui.ps1` (starts the server, waits for
+health, opens the browser); the icon is generated on demand into
+`scripts/assets/` (git-ignored). Windows-only, no elevation. See
+`06-agent-documentation/desktop-icon-setup.md`.
+
 ## Run in Docker (container mode) — optional
 
 For a reproducible "pull-and-run" dashboard:
