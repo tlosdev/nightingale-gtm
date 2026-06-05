@@ -58,6 +58,16 @@
 .PARAMETER Name
     Passed through to install-runner.ps1 if set (otherwise its defaults apply).
 
+.PARAMETER WhatIf
+    Dry-run preview. Reports what a real run WOULD do -- elevation, token source,
+    existing runner, which legacy tasks would be removed -- and exits without
+    changing anything. Read-only and safe to run unprivileged. Recommended before
+    your first real run.
+
+.EXAMPLE
+    # Preview first -- shows what would happen, changes nothing.
+    .\scripts\activate-runner.ps1 -WhatIf
+
 .EXAMPLE
     # Simplest path: double-click-equivalent. Mints the token via gh (tlosdev),
     # self-elevates, installs, migrates, verifies.
@@ -80,7 +90,8 @@ param(
     [switch]$ConfigureSecrets,
     [string]$InstallDir,
     [string]$RunnerVersion,
-    [string]$Name
+    [string]$Name,
+    [switch]$WhatIf
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,6 +123,65 @@ $setupSecrets    = Join-Path $PSScriptRoot 'setup-secrets.ps1'
 if (-not (Test-Path $installRunner)) {
     Write-Error "install-runner.ps1 not found next to this script ($installRunner)."
     exit 1
+}
+
+# --- WhatIf (dry-run preview) ------------------------------------------------
+# Read-only. Reports exactly what a real run WOULD do -- without elevating,
+# minting a token, downloading anything, installing a service, or removing any
+# task. Safe to run unprivileged; nothing here changes system state.
+if ($WhatIf) {
+    Write-Host "WHATIF: activate-runner.ps1 preview -- NO changes will be made." -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host ("Target repo     : {0}/{1}  ({2})" -f $owner, $repo, $RepoUrl)
+    Write-Host ("Runner vault    : {0}" -f (Split-Path -Parent $PSScriptRoot))
+    Write-Host ("Install dir     : {0}" -f $(if ($InstallDir) { $InstallDir } else { 'C:\actions-runner-nightingale (default)' }))
+
+    if (Test-Admin) {
+        Write-Host "Elevation       : already elevated (no UAC prompt needed)"
+    } else {
+        Write-Host "Elevation       : NOT elevated -> a real run would request UAC and relaunch elevated"
+    }
+
+    if ($Token) {
+        Write-Host "Token           : provided via -Token (used as-is)"
+    } else {
+        $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+        if (-not $ghCmd) {
+            Write-Host "Token           : would FAIL -- gh CLI not found and no -Token given (install gh, or pass -Token)"
+        } else {
+            $authText = (& gh auth status 2>&1 | Out-String)
+            $hasAccount = [bool]($authText | Select-String -SimpleMatch $GhAccount -Quiet)
+            Write-Host ("Token           : would be minted via gh account '{0}' (present in gh auth: {1})" -f $GhAccount, $hasAccount)
+            Write-Host ("                  admin on {0}/{1} is required; not verified in -WhatIf" -f $owner, $repo)
+        }
+    }
+
+    $svcPreview = Get-Service -Name 'actions.runner.*' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($svcPreview) {
+        Write-Host ("Existing runner : {0} -- {1} (a real run would re-register with --replace)" -f $svcPreview.Name, $svcPreview.Status)
+    } else {
+        Write-Host "Existing runner : none (a real run would download + install one as a boot-start service)"
+    }
+
+    if (-not $SkipLegacyUninstall) {
+        $legacyPreviewNames = @('Nightingale-Daily-Brief-Morning','Nightingale-Commercial-Sweep','Nightingale-Academic-Sweep','Nightingale-Intro-Finder-Morning','Nightingale-Gmail-Resurfacer-Morning','Nightingale-HubSpot-Manager-Nightly','Nightingale-Investor-Analyzer-Weekly','Nightingale-Investor-Newsletter-Biweekly')
+        $legacyPresent = @(Get-ScheduledTask -TaskName 'Nightingale-*' -ErrorAction SilentlyContinue | Where-Object { $legacyPreviewNames -contains $_.TaskName } | ForEach-Object { $_.TaskName })
+        if ($legacyPresent.Count -gt 0) {
+            Write-Host ("Legacy tasks    : would REMOVE {0}: {1}" -f $legacyPresent.Count, ($legacyPresent -join ', '))
+        } else {
+            Write-Host "Legacy tasks    : none present (nothing to remove)"
+        }
+    } else {
+        Write-Host "Legacy tasks    : -SkipLegacyUninstall set -> would KEEP legacy tasks (double-fire risk)"
+    }
+
+    Write-Host "Boot catch-up   : a real run would register the Nightingale-Boot-Catchup on-boot task"
+    if ($ConfigureSecrets) {
+        Write-Host "Secrets         : -ConfigureSecrets set -> would launch setup-secrets.ps1 after install"
+    }
+    Write-Host ""
+    Write-Host "No changes were made. Re-run without -WhatIf to apply." -ForegroundColor Green
+    exit 0
 }
 
 # --- Elevation ---------------------------------------------------------------

@@ -75,7 +75,10 @@ a verification summary. The registration token is handed to the installer throug
 the process **environment block**, never a command line.
 
 ```powershell
-# From the repo root. No need to pre-elevate or mint a token yourself.
+# Preview first (recommended) -- shows what would happen, changes nothing:
+.\scripts\activate-runner.ps1 -WhatIf
+
+# Then, from the repo root. No need to pre-elevate or mint a token yourself:
 .\scripts\activate-runner.ps1
 ```
 
@@ -84,6 +87,7 @@ Defaults: `-RepoUrl https://github.com/tlosdev/nightingale-gtm`,
 token). Pass `-RepoUrl`/`-GhAccount` if you cloned a fork. Useful switches:
 
 ```powershell
+.\scripts\activate-runner.ps1 -WhatIf               # dry-run preview (read-only; no elevation, no token mint)
 .\scripts\activate-runner.ps1 -ConfigureSecrets     # also run setup-secrets.ps1 (add the GitHub PAT)
 .\scripts\activate-runner.ps1 -Token 'AXXXX...'     # use a token you minted yourself (run elevated)
 .\scripts\activate-runner.ps1 -SkipLegacyUninstall  # keep the old tasks (almost never what you want)
