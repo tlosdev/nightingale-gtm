@@ -1,10 +1,17 @@
-// Spawn `claude -p "<phrase>"` subprocess. The phrase MUST be validated
-// against the trigger allowlist by the caller BEFORE invoking this. This
-// module enforces the allowlist again as defense in depth and is the only
-// place in the codebase that calls child_process.spawn for the claude CLI.
-import { spawn } from 'node:child_process';
-import { isPhraseAllowed } from '../trigger-allowlist.js';
-import { repoRoot } from './paths.js';
+// Thin compatibility wrapper around the background-run model in runs.ts.
+//
+// HISTORY: this module used to own the `claude -p` spawn directly with a hand-
+// rolled allowlist env. That allowlist stripped a variable the CLI needs and
+// caused `runClaude` to hang forever (the child blocked on closed stdin during
+// onboarding/auth and never exited or errored). The hardened spawn — full env
+// inherit minus known secrets, resolved exe, Windows tree-kill, guaranteed
+// settle — now lives in runs.ts (the single spawn chokepoint).
+//
+// runClaude() is kept as a synchronous-style awaitable so the apply/reject
+// callers in routes/pending.ts and routes/queues.ts are UNCHANGED: they await
+// the result exactly as before. They no longer hang because the underlying
+// spawn always settles.
+import { startRun } from './runs.js';
 
 export interface ClaudeRunResult {
   exitCode: number;
@@ -14,100 +21,29 @@ export interface ClaudeRunResult {
 }
 
 export interface ClaudeRunOptions {
-  /** Max wall-clock duration before the subprocess is killed. Default: 5 minutes. */
+  /** Max wall-clock duration before the subprocess tree is killed. Default: 5 minutes. */
   timeoutMs?: number;
+  /** Coarse classification for the run registry (default 'task'). */
+  kind?: string;
+  /** Human label for the run registry (default: the phrase). */
+  label?: string;
 }
 
 /**
- * Run `claude -p "<phrase>"` and capture stdout/stderr. Returns the result
- * synchronously after the subprocess exits (or after the timeout, in which
- * case the subprocess is killed and exitCode is -1).
+ * Run `claude -p "<phrase>"` to completion and return its result. The phrase
+ * MUST be constructed from validated fields; startRun() re-validates it
+ * against the allowlist before spawning (throwing synchronously if rejected).
  *
- * SECURITY:
- * - Uses array-argument form with shell:false. The phrase is passed as a
- *   single argv element, never interpolated into a shell command line.
- * - Re-validates against the allowlist as defense-in-depth.
- * - cwd is locked to the repo root so the `claude` CLI discovers the
- *   `.claude/agents/` directory.
- * - Environment is MINIMAL — only the Windows + Node basics the CLI needs
- *   to find PATH, user profile, temp dirs, and Anthropic-stored credentials
- *   (which the CLI keeps under %APPDATA% / %LOCALAPPDATA%). The parent's
- *   full env is NOT inherited, so any sensitive variables set in the shell
- *   the operator launched start-ui.ps1 from do not leak into the subprocess.
+ * This is a thin wrapper over startRun().done — every invocation is also
+ * recorded in the run registry, so apply/reject actions show up in the Logs
+ * tab alongside manual agent runs.
  */
-const SUBPROCESS_ENV_KEYS = [
-  'PATH', 'PATHEXT',
-  'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
-  'APPDATA', 'LOCALAPPDATA',
-  'TEMP', 'TMP',
-  'SystemRoot', 'SystemDrive', 'ComSpec',
-  'USERNAME', 'USERDOMAIN',
-] as const;
-
-function minimalEnv(): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = {};
-  for (const k of SUBPROCESS_ENV_KEYS) {
-    const v = process.env[k];
-    if (v !== undefined) out[k] = v;
-  }
-  return out;
-}
 export async function runClaude(phrase: string, opts: ClaudeRunOptions = {}): Promise<ClaudeRunResult> {
-  if (!isPhraseAllowed(phrase)) {
-    throw new Error(`Trigger phrase rejected by allowlist: ${JSON.stringify(phrase)}`);
-  }
-  const timeoutMs = opts.timeoutMs ?? 5 * 60 * 1000;
-  const started = Date.now();
-
-  return await new Promise<ClaudeRunResult>((resolve) => {
-    let stdout = '';
-    let stderr = '';
-    let killed = false;
-
-    // shell: false is critical. With shell: true the phrase string would be
-    // re-parsed by cmd.exe and any shell metacharacter we missed in
-    // isPhraseAllowed could become an injection vector.
-    const child = spawn('claude', ['-p', phrase], {
-      cwd: repoRoot(),
-      shell: false,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: minimalEnv(),
-    });
-
-    const timer = setTimeout(() => {
-      killed = true;
-      try {
-        child.kill('SIGTERM');
-        setTimeout(() => {
-          if (!child.killed) child.kill('SIGKILL');
-        }, 5000);
-      } catch {
-        // best-effort
-      }
-    }, timeoutMs);
-
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({
-        exitCode: -1,
-        stdout,
-        stderr: stderr + `\n[spawn error] ${err.message}`,
-        durationMs: Date.now() - started,
-      });
-    });
-
-    child.on('exit', (code) => {
-      clearTimeout(timer);
-      resolve({
-        exitCode: killed ? -1 : (code ?? -1),
-        stdout,
-        stderr: killed ? stderr + '\n[killed: timeout exceeded]' : stderr,
-        durationMs: Date.now() - started,
-      });
-    });
+  const { done } = startRun({
+    phrase,
+    kind: opts.kind ?? 'task',
+    label: opts.label ?? phrase,
+    timeoutMs: opts.timeoutMs,
   });
+  return done;
 }

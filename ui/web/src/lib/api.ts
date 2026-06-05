@@ -145,7 +145,62 @@ export interface SecretsHealth {
   has_apify_validation_url: boolean;
   has_linkedin_li_at: boolean;
   has_apify_company_roster_actor_id: boolean;
+  has_pitch_deck_drive_file_id: boolean;
+  has_pitch_deck_drive_url: boolean;
   updated_at: string | null;
+}
+
+// Unified approvals (Dashboard). Each item is a PendingItem tagged with the
+// queue it came from so the row can route Apply/Reject to the right endpoint.
+export type ApprovalCategory = QueueName;
+export interface ApprovalItem extends PendingItem {
+  category: ApprovalCategory;
+}
+export interface ApprovalsResp {
+  approvals: ApprovalItem[];
+  counts: {
+    total: number;
+    by_category: Record<string, number>;
+  };
+}
+
+// Partial secrets update. All fields optional; optionals may be '' to clear.
+export interface SecretsUpdate {
+  apify_api_token?: string;
+  apify_actor_id?: string;
+  apify_validation_url?: string;
+  linkedin_li_at?: string;
+  apify_company_roster_actor_id?: string;
+  pitch_deck_drive_file_id?: string;
+  pitch_deck_drive_url?: string;
+}
+export interface SecretsSaveResp {
+  ok: boolean;
+  written_fields: string[];
+  schema_version: number | null;
+  health: SecretsHealth;
+}
+
+// Background-run registry (Logs tab).
+export type RunStatus = 'running' | 'ok' | 'error' | 'timeout';
+export interface RunRecord {
+  id: string;
+  kind: string;
+  label: string;
+  phrase: string;
+  status: RunStatus;
+  exit_code: number | null;
+  started_at: string;
+  duration_ms: number | null;
+}
+export interface RunDetail {
+  run: RunRecord;
+  log_tail: string;
+}
+export interface AgentRunResp {
+  run_id: string;
+  agent: string;
+  phrase: string;
 }
 
 // === Callers ===
@@ -153,10 +208,26 @@ export const api = {
   health: () => request<HealthResp>('/api/health'),
 
   agents: () => request<{ agents: AgentSummary[] }>('/api/agents'),
+  // Run-now is async: returns a run_id immediately; poll runDetail() for status.
   agentRun: (agent: string) =>
-    request<ActionResp>('/api/agents/run', { method: 'POST', body: JSON.stringify({ agent }) }),
+    request<AgentRunResp>('/api/agents/run', { method: 'POST', body: JSON.stringify({ agent }) }),
+  agentOutput: (name: string) => request<MdResp>(`/api/agents/${encodeURIComponent(name)}/output`),
 
   briefToday: () => request<BriefResp>('/api/brief/today'),
+
+  // Unified approvals aggregator (Dashboard). Apply/Reject still route through
+  // the per-queue endpoints below (pendingApply / queueApply).
+  approvals: () => request<ApprovalsResp>('/api/approvals/'),
+
+  // Background-run history + detail (Logs tab).
+  runs: () => request<{ runs: RunRecord[] }>('/api/runs/'),
+  runDetail: (id: string) => request<RunDetail>(`/api/runs/${encodeURIComponent(id)}`),
+
+  // Settings tab.
+  settingsSecrets: () => request<SecretsHealth>('/api/settings/secrets'),
+  settingsSecretsSave: (partial: SecretsUpdate) =>
+    request<SecretsSaveResp>('/api/settings/secrets', { method: 'POST', body: JSON.stringify(partial) }),
+  settingsConnectors: () => request<{ connectors: McpStatus[] }>('/api/settings/connectors'),
 
   pending: () => request<PendingResp>('/api/pending/'),
   pendingApply: (pending_ids: number[] | 'all', run_date: string) =>

@@ -4,6 +4,8 @@
 // allowed here are hardcoded — no user-supplied PowerShell strings ever
 // reach this layer.
 import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { repoRoot } from './paths.js';
 
 export interface PSResult {
   exitCode: number;
@@ -100,5 +102,81 @@ export interface NightingaleTaskInfo {
   last_run_time: string | null;
   next_run_time: string | null;
   last_task_result: number | null;
+}
+
+export interface WriteSecretsResult {
+  ok: boolean;
+  written_fields?: string[];
+  schema_version?: number;
+  error?: string;
+  raw_stdout?: string;
+  raw_stderr?: string;
+}
+
+/**
+ * Write/merge secrets.json by invoking scripts/write-secrets.ps1 with the
+ * secret values delivered on STDIN as a single JSON object — never on argv, so
+ * the values never appear in any process listing. The script does the ACL-first
+ * atomic write and prints a JSON result on its last stdout line.
+ *
+ * This is the ONLY place the server can mutate secrets.json, and only via the
+ * dedicated, fixed script path (no interpolation, no arbitrary PowerShell).
+ */
+export async function writeSecrets(jsonPayload: string): Promise<WriteSecretsResult> {
+  const scriptPath = path.join(repoRoot(), 'scripts', 'write-secrets.ps1');
+  return await new Promise<WriteSecretsResult>((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+      { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch { /* best-effort */ }
+    }, 60 * 1000);
+
+    const finish = (r: WriteSecretsResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+
+    child.stdout?.on('data', (b: Buffer) => { stdout += b.toString('utf8'); });
+    child.stderr?.on('data', (b: Buffer) => { stderr += b.toString('utf8'); });
+    child.on('error', (err) => finish({ ok: false, error: `spawn_error: ${err.message}` }));
+    child.on('exit', (code) => {
+      // The script prints a single-line JSON result. Parse the last non-empty
+      // line so any informational Write-Host lines above it are tolerated.
+      const lines = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const parsed = JSON.parse(lines[i]) as WriteSecretsResult;
+          if (typeof parsed.ok === 'boolean') {
+            finish({ ...parsed, raw_stderr: stderr || undefined });
+            return;
+          }
+        } catch {
+          // not JSON — keep scanning upward
+        }
+      }
+      finish({
+        ok: code === 0,
+        error: code === 0 ? 'no_result_json' : `exit_${code}`,
+        raw_stdout: stdout.slice(-2000) || undefined,
+        raw_stderr: stderr.slice(-2000) || undefined,
+      });
+    });
+
+    // Deliver the payload on stdin and close it.
+    try {
+      child.stdin?.write(jsonPayload);
+      child.stdin?.end();
+    } catch {
+      finish({ ok: false, error: 'stdin_write_failed' });
+    }
+  });
 }
 

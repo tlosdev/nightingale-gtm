@@ -4,21 +4,17 @@ import { api } from '../lib/api';
 import { useEffect, useState } from 'react';
 
 const NAV = [
-  { to: '/', label: 'Dashboard', end: true },
-  { to: '/brief', label: "Today's Brief" },
-  { to: '/pending', label: 'Pending Approvals', badge: true },
-  { to: '/pitch-deck', label: 'Pitch Deck Edits' },
-  { to: '/newsletter', label: 'Investor Newsletter' },
+  { to: '/', label: 'Dashboard', end: true, badge: true },
   { to: '/agents', label: 'Agents' },
-  { to: '/signals/commercial', label: 'Signals' },
-  { to: '/resurfacer', label: 'Re-surfacer' },
-  { to: '/feedback', label: 'Feedback' },
-  { to: '/diagnostics', label: 'Diagnostics' },
+  { to: '/settings', label: 'Settings' },
+  { to: '/logs', label: 'Logs' },
 ] as const;
 
 export function Layout() {
-  const pending = useQuery({ queryKey: ['pending'], queryFn: () => api.pending() });
-  const pendingCount = pending.data?.counts.total ?? 0;
+  // Aggregate approvals count across all queues (hubspot + pitch-deck +
+  // newsletter) — the badge now reflects everything awaiting a decision.
+  const approvals = useQuery({ queryKey: ['approvals'], queryFn: () => api.approvals() });
+  const pendingCount = approvals.data?.counts.total ?? 0;
   return (
     <div className="flex h-full">
       <aside className="w-56 shrink-0 border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex flex-col">

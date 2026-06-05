@@ -1,9 +1,10 @@
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, AgentSummary } from '../lib/api';
+import { MarkdownRenderer } from '../components/MarkdownRenderer';
 
 export default function AgentsControlPanel() {
-  const qc = useQueryClient();
   const agents = useQuery({ queryKey: ['agents'], queryFn: api.agents });
 
   return (
@@ -11,16 +12,16 @@ export default function AgentsControlPanel() {
       <header className="mb-4">
         <h1 className="text-2xl font-semibold">Agents</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Trigger an agent on demand. Each "Run now" invokes the same{' '}
-          <code className="text-xs">claude -p &quot;...&quot;</code> phrase the scheduled task would.
-          Scheduled tasks continue firing on their own cadence regardless.
+          Trigger an agent on demand. "Run now" starts a background run and returns immediately — watch it stream in
+          the <Link to="/logs" className="text-accent-600 dark:text-accent-500 hover:underline">Logs</Link> tab.
+          Scheduled tasks keep firing on their own cadence regardless.
         </p>
       </header>
       {agents.isLoading && <p className="text-sm text-gray-500">Loading…</p>}
       {agents.data && (
         <div className="space-y-3">
           {agents.data.agents.map((agent) => (
-            <AgentCard key={agent.name} agent={agent} onRun={() => qc.invalidateQueries({ queryKey: ['agents'] })} />
+            <AgentCard key={agent.name} agent={agent} />
           ))}
         </div>
       )}
@@ -28,14 +29,24 @@ export default function AgentsControlPanel() {
   );
 }
 
-function AgentCard({ agent, onRun }: { agent: AgentSummary; onRun: () => void }) {
-  const [result, setResult] = useState<{ ok: boolean; stdout: string; stderr: string } | null>(null);
+function AgentCard({ agent }: { agent: AgentSummary }) {
+  const qc = useQueryClient();
+  const [started, setStarted] = useState<{ run_id: string } | null>(null);
+  const [showOutput, setShowOutput] = useState(false);
+
   const runMutation = useMutation({
     mutationFn: () => api.agentRun(agent.name),
     onSuccess: (r) => {
-      setResult({ ok: r.ok, stdout: r.stdout, stderr: r.stderr });
-      onRun();
+      setStarted({ run_id: r.run_id });
+      // A new run now exists — refresh the Logs list so it shows up there too.
+      qc.invalidateQueries({ queryKey: ['runs'] });
     },
+  });
+
+  const output = useQuery({
+    queryKey: ['agent-output', agent.name],
+    queryFn: () => api.agentOutput(agent.name),
+    enabled: showOutput,
   });
 
   return (
@@ -67,24 +78,42 @@ function AgentCard({ agent, onRun }: { agent: AgentSummary; onRun: () => void })
             <dd>{agent.last_output_generated_at ? new Date(agent.last_output_generated_at).toLocaleString() : 'none'}</dd>
           </dl>
         </div>
-        <button
-          type="button"
-          disabled={runMutation.isPending}
-          onClick={() => runMutation.mutate()}
-          className="shrink-0 px-3 py-1.5 text-sm font-medium rounded bg-accent-600 hover:bg-accent-700 text-white disabled:opacity-50"
-        >
-          {runMutation.isPending ? 'Running…' : 'Run now'}
-        </button>
+        <div className="flex flex-col gap-1 shrink-0">
+          <button
+            type="button"
+            disabled={runMutation.isPending}
+            onClick={() => runMutation.mutate()}
+            className="px-3 py-1.5 text-sm font-medium rounded bg-accent-600 hover:bg-accent-700 text-white disabled:opacity-50"
+          >
+            {runMutation.isPending ? 'Starting…' : 'Run now'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowOutput((v) => !v)}
+            className="px-3 py-1.5 text-sm rounded border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
+          >
+            {showOutput ? 'Hide output' : 'View output'}
+          </button>
+        </div>
       </div>
-      {result && (
-        <div className={`mt-3 p-2 text-xs rounded border ${
-          result.ok
-            ? 'border-green-500/30 bg-green-500/5 text-green-800 dark:text-green-300'
-            : 'border-red-500/30 bg-red-500/5 text-red-800 dark:text-red-300'
-        }`}>
-          <p className="font-medium">{result.ok ? '✓ Success' : '✗ Failed'}</p>
-          {result.stdout && <pre className="mt-1 overflow-x-auto max-h-40">{result.stdout.slice(-1500)}</pre>}
-          {result.stderr && <pre className="mt-1 overflow-x-auto max-h-32 text-red-700 dark:text-red-400">{result.stderr.slice(-800)}</pre>}
+
+      {started && (
+        <div className="mt-3 p-2 text-xs rounded border border-blue-500/30 bg-blue-500/5 text-blue-800 dark:text-blue-300">
+          Run started (<code>{started.run_id}</code>).{' '}
+          <Link to="/logs" className="underline">Open Logs →</Link>
+        </div>
+      )}
+      {runMutation.error && (
+        <div className="mt-3 p-2 text-xs rounded border border-red-500/30 bg-red-500/5 text-red-800 dark:text-red-300">
+          Failed to start: {(runMutation.error as Error).message}
+        </div>
+      )}
+
+      {showOutput && (
+        <div className="mt-3 p-3 rounded border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950">
+          {output.isLoading && <p className="text-sm text-gray-500">Loading…</p>}
+          {output.data && !output.data.found && <p className="text-sm text-gray-500">{output.data.message ?? 'No output yet.'}</p>}
+          {output.data?.found && output.data.raw_markdown && <MarkdownRenderer markdown={output.data.raw_markdown} />}
         </div>
       )}
     </article>

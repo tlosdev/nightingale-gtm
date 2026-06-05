@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { PATHS, latestFileMatching } from '../lib/paths.js';
 import { AGENT_TRIGGERS, type AgentName } from '../trigger-allowlist.js';
-import { runClaude } from '../lib/claude.js';
+import { startRun } from '../lib/runs.js';
 import { getNightingaleScheduledTasks } from '../lib/powershell.js';
 
 export const agentsRouter = Router();
@@ -88,6 +88,37 @@ agentsRouter.get('/', async (_req, res) => {
   res.json({ agents: summaries });
 });
 
+// Latest Desktop output markdown for one agent. The agent name is validated
+// against AGENT_TRIGGERS (an enum), so no user-supplied path ever reaches the
+// filesystem — latestOutputFor() resolves a fixed per-agent directory + regex.
+// This is what the Agents tab uses to render an agent's most recent output
+// uniformly, instead of wiring six different per-agent markdown endpoints.
+agentsRouter.get('/:name/output', (req, res) => {
+  const name = String(req.params.name);
+  if (!Object.prototype.hasOwnProperty.call(AGENT_TRIGGERS, name)) {
+    res.status(404).json({ error: 'unknown_agent', name });
+    return;
+  }
+  const latest = latestOutputFor(name as AgentName);
+  if (!latest || !fs.existsSync(latest.path)) {
+    res.json({ found: false, message: 'No output produced yet for this agent.' });
+    return;
+  }
+  let raw_markdown = '';
+  try {
+    raw_markdown = fs.readFileSync(latest.path, 'utf8');
+  } catch {
+    res.json({ found: false, message: 'Output file could not be read.' });
+    return;
+  }
+  res.json({
+    found: true,
+    path: latest.path,
+    generated_at: new Date(latest.mtime).toISOString(),
+    raw_markdown,
+  });
+});
+
 const RunRequestSchema = z.object({
   agent: z.enum(Object.keys(AGENT_TRIGGERS) as [AgentName, ...AgentName[]]),
 });
@@ -109,26 +140,29 @@ const AGENT_TIMEOUT_MS: Record<AgentName, number> = {
   'investor-newsletter': 10 * 60 * 1000,
 };
 
-agentsRouter.post('/run', async (req, res) => {
+// Run-now is now ASYNCHRONOUS. We start the background run and return its
+// run_id IMMEDIATELY — the client opens the Logs tab and polls /api/runs/:id
+// for live status + log tail. This is what fixes the "spinner hangs forever"
+// UX: even if a run takes 15 minutes (or wedges and is timeout-killed), the
+// HTTP request returns in milliseconds and the run settles in the registry.
+agentsRouter.post('/run', (req, res) => {
   const parse = RunRequestSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: 'invalid_request', details: parse.error.flatten() });
     return;
   }
-  const phrase = AGENT_TRIGGERS[parse.data.agent];
-  const timeoutMs = AGENT_TIMEOUT_MS[parse.data.agent] ?? 5 * 60 * 1000;
+  const agent = parse.data.agent;
+  const phrase = AGENT_TRIGGERS[agent];
+  const timeoutMs = AGENT_TIMEOUT_MS[agent] ?? 5 * 60 * 1000;
   try {
-    const result = await runClaude(phrase, { timeoutMs });
-    res.json({
-      agent: parse.data.agent,
-      phrase,
-      ok: result.exitCode === 0,
-      exit_code: result.exitCode,
-      duration_ms: result.durationMs,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    });
+    const { id, done } = startRun({ phrase, kind: 'agent', label: agent, timeoutMs });
+    // The run executes in the background. Attach a no-op catch so a settle path
+    // we didn't await can never surface as an unhandled rejection (it won't —
+    // done always resolves — but this keeps lint + future-proofing happy).
+    void done.catch(() => undefined);
+    res.json({ run_id: id, agent, phrase });
   } catch (err) {
-    res.status(500).json({ error: 'claude_invocation_failed', detail: (err as Error).message });
+    // Thrown synchronously only if the constructed phrase fails the allowlist.
+    res.status(400).json({ error: 'claude_invocation_rejected', detail: (err as Error).message });
   }
 });

@@ -1,10 +1,11 @@
 // Nightingale UI — Express server entry.
 //
 // Binds to 127.0.0.1 only (never 0.0.0.0). Serves the built React app from
-// web/dist + a small REST API at /api/*. The only mutation surface is
-// spawning `claude -p "<allowlisted phrase>"` and (read-only)
-// `powershell Get-ScheduledTask` subprocesses; the server itself NEVER
-// writes to ~/Desktop/nightingale-signals/** directly.
+// web/dist + a small REST API at /api/*. Mutation surfaces are: spawning
+// `claude -p "<allowlisted phrase>"`, the dedicated write-secrets.ps1 script
+// (Settings), and (read-only) `powershell Get-ScheduledTask`. The only place
+// the server writes under ~/Desktop/nightingale-signals/** is the server-owned
+// run registry at _runs/ (lib/runs.ts) — never an agent's output tree.
 import express from 'express';
 import helmet from 'helmet';
 import fs from 'node:fs';
@@ -20,6 +21,9 @@ import { resurfacerRouter } from './routes/resurfacer.js';
 import { feedbackRouter } from './routes/feedback.js';
 import { agentsRouter } from './routes/agents.js';
 import { diagnosticsRouter } from './routes/diagnostics.js';
+import { approvalsRouter } from './routes/approvals.js';
+import { settingsRouter } from './routes/settings.js';
+import { runsRouter } from './routes/runs.js';
 
 const PORT = Number(process.env.NIGHTINGALE_UI_PORT ?? 8765);
 const HOST = '127.0.0.1';  // loopback ONLY — never bind to 0.0.0.0
@@ -107,6 +111,9 @@ app.use('/api/resurfacer', resurfacerRouter);
 app.use('/api/feedback', feedbackRouter);
 app.use('/api/agents', agentsRouter);
 app.use('/api/diagnostics', diagnosticsRouter);
+app.use('/api/approvals', approvalsRouter); // unified, category-tagged approvals (Dashboard)
+app.use('/api/settings', settingsRouter);   // editable secrets + connector status
+app.use('/api/runs', runsRouter);           // background-run history + live status (Logs)
 
 // Static frontend served from web/dist. fileURLToPath handles Windows paths
 // + percent-encoding correctly (paths with spaces work).

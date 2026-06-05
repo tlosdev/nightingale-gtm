@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PATHS, SECRETS_PATH } from '../lib/paths.js';
+import { PATHS } from '../lib/paths.js';
 import { getNightingaleScheduledTasks } from '../lib/powershell.js';
+import { readSecretsHealth } from '../lib/secrets-health.js';
 
 export const diagnosticsRouter = Router();
 
@@ -39,13 +40,21 @@ function mostRecentNotice(dir: string, pattern: RegExp): { path: string; mtime: 
   return best;
 }
 
+export interface ConnectorStatus {
+  connector: string;
+  authorized: boolean;
+  last_notice_path: string | null;
+  last_notice_at: string | null;
+}
+
 // Best-effort MCP authorization detection: an unauthorized connector is one
 // that has emitted a NOT_AUTHORIZED notice in the last 7 days. Older notices
 // are stale (operator may have fixed it since). Genuinely-authorized = no
-// recent notice.
-diagnosticsRouter.get('/mcp', (_req, res) => {
+// recent notice. Exported so the Settings "Connections" panel reuses the exact
+// same heuristic as the diagnostics endpoint.
+export function computeMcpStatus(): ConnectorStatus[] {
   const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const mcp_status = NOTICE_FILES.map(({ connector, dir, pattern }) => {
+  return NOTICE_FILES.map(({ connector, dir, pattern }) => {
     const notice = mostRecentNotice(dir, pattern);
     const recentNotice = notice && notice.mtime > sevenDaysAgo;
     return {
@@ -55,7 +64,10 @@ diagnosticsRouter.get('/mcp', (_req, res) => {
       last_notice_at: recentNotice ? new Date(notice.mtime).toISOString() : null,
     };
   });
-  res.json({ mcp_status });
+}
+
+diagnosticsRouter.get('/mcp', (_req, res) => {
+  res.json({ mcp_status: computeMcpStatus() });
 });
 
 diagnosticsRouter.get('/tasks', async (_req, res) => {
@@ -70,63 +82,9 @@ diagnosticsRouter.get('/tasks', async (_req, res) => {
   res.json({ tasks });
 });
 
-// IMPORTANT: this endpoint returns PRESENCE-OF-FIELDS only — never the
-// actual secret values. The response shape is enforced by tsc; reviewers
-// should confirm this when auditing the security boundary.
-interface SecretsHealth {
-  exists: boolean;
-  schema_version: number | null;
-  has_apify_api_token: boolean;
-  has_apify_actor_id: boolean;
-  has_apify_validation_url: boolean;
-  has_linkedin_li_at: boolean;
-  has_apify_company_roster_actor_id: boolean;
-  updated_at: string | null;
-}
-
+// IMPORTANT: this endpoint returns PRESENCE-OF-FIELDS only — never the actual
+// secret values. The logic lives in lib/secrets-health.ts so the Settings GET
+// shares exactly one implementation of this security boundary.
 diagnosticsRouter.get('/secrets', (_req, res) => {
-  if (!fs.existsSync(SECRETS_PATH)) {
-    const out: SecretsHealth = {
-      exists: false,
-      schema_version: null,
-      has_apify_api_token: false,
-      has_apify_actor_id: false,
-      has_apify_validation_url: false,
-      has_linkedin_li_at: false,
-      has_apify_company_roster_actor_id: false,
-      updated_at: null,
-    };
-    res.json(out);
-    return;
-  }
-  let parsed: Record<string, unknown> = {};
-  try {
-    parsed = JSON.parse(fs.readFileSync(SECRETS_PATH, 'utf8'));
-  } catch {
-    // Could not parse — treat as exists but malformed.
-    const out: SecretsHealth = {
-      exists: true,
-      schema_version: null,
-      has_apify_api_token: false,
-      has_apify_actor_id: false,
-      has_apify_validation_url: false,
-      has_linkedin_li_at: false,
-      has_apify_company_roster_actor_id: false,
-      updated_at: null,
-    };
-    res.json(out);
-    return;
-  }
-  const has = (k: string) => typeof parsed[k] === 'string' && (parsed[k] as string).length > 0;
-  const out: SecretsHealth = {
-    exists: true,
-    schema_version: typeof parsed.schema_version === 'number' ? parsed.schema_version : null,
-    has_apify_api_token: has('apify_api_token'),
-    has_apify_actor_id: has('apify_actor_id'),
-    has_apify_validation_url: has('apify_validation_url'),
-    has_linkedin_li_at: has('linkedin_li_at'),
-    has_apify_company_roster_actor_id: has('apify_company_roster_actor_id'),
-    updated_at: typeof parsed.updated_at === 'string' ? (parsed.updated_at as string) : null,
-  };
-  res.json(out);
+  res.json(readSecretsHealth());
 });
