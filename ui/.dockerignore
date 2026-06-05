@@ -1,0 +1,16 @@
+# Rebuilt inside the image — never copy the host's versions in.
+node_modules
+web/dist
+
+# VCS / editor / OS noise
+.git
+.gitignore
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# The Dockerfile + compose themselves don't need to be in the build context.
+Dockerfile
+.dockerignore
+docker-compose.yml

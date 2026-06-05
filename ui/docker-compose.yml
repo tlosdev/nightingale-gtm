@@ -1,0 +1,52 @@
+# Nightingale UI — Docker run (dashboard-only / "container mode").
+#
+# Brings up the UI as an always-on local service that renders the agent output
+# tree. It CANNOT run agents, approve queues, or edit secrets — those need the
+# host (scripts/start-ui.ps1) or the Phase 3 GitHub self-hosted runner. See the
+# Dockerfile honesty note + ui/README.md.
+#
+# Usage (from ui/):
+#   docker compose up -d --build      # build + start in the background
+#   docker compose logs -f            # tail
+#   docker compose down               # stop
+#
+# Host paths come from ${USERPROFILE} (Windows / Docker Desktop). If your agent
+# output or secrets live elsewhere, edit the `source:` lines below (or set
+# USERPROFILE in a .env file next to this compose file). The long bind syntax
+# is used deliberately so Windows drive-letter colons (C:\...) don't get
+# mis-parsed by the volume short-form splitter.
+
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nightingale-ui:local
+    container_name: nightingale-ui
+    # Loopback-ONLY host exposure. The container binds 0.0.0.0 internally (so
+    # this mapping can reach it), but the published port is bound to the host's
+    # 127.0.0.1 — never reachable from the LAN.
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      NIGHTINGALE_CONTAINER: "1"
+      NIGHTINGALE_UI_PORT: "8765"
+      HOME: "/data"
+    volumes:
+      # Agent output tree (read-only — the container only renders it).
+      - type: bind
+        source: ${USERPROFILE}\Desktop\nightingale-signals
+        target: /data/Desktop/nightingale-signals
+        read_only: true
+      # Secrets file (read-only — presence shown in Settings; edits happen on
+      # the host where PowerShell + write-secrets.ps1 exist).
+      - type: bind
+        source: ${USERPROFILE}\.nightingale
+        target: /data/.nightingale
+        read_only: true
+      # Agent definitions (read-only) so they're inspectable from the container.
+      - type: bind
+        source: ../.claude/agents
+        target: /app/.claude/agents
+        read_only: true
+    restart: unless-stopped

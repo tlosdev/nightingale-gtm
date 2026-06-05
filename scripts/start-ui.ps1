@@ -28,6 +28,14 @@
     Delete ui/web/dist/ before building. Useful after a git pull that may have
     introduced source changes that the mtime-comparison stale-check can miss.
 
+.PARAMETER Docker
+    Run the UI as a Docker container ("container mode") via docker compose
+    instead of natively with Node. Container mode is dashboard-ONLY: it renders
+    the mounted agent output tree but cannot run agents, approve queues, or edit
+    secrets (no host Claude Code / claude.ai MCP / PowerShell inside the
+    container). Use the native (no -Docker) path for those actions. Requires
+    Docker Desktop. The published port is bound to the host's 127.0.0.1 only.
+
 .NOTES
     Requires Windows + PowerShell 5.1+ AND Node.js 18 LTS or newer.
     Install Node from https://nodejs.org/ if needed.
@@ -45,7 +53,8 @@
 
 param(
     [int]$Port = 8765,
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$Docker
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,6 +63,63 @@ $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -lt 5) {
     Write-Error "PowerShell $($PSVersionTable.PSVersion) detected; this script requires 5.1 or newer."
     exit 1
+}
+
+# --- Docker (container) mode -------------------------------------------------
+# Dashboard-only. Builds + starts the container detached via docker compose,
+# waits for health, opens the browser, and returns (the container keeps running
+# under Docker's restart policy; stop it with `docker compose down`).
+if ($Docker) {
+    $dockerCmd = Get-Command docker -ErrorAction SilentlyContinue
+    if (-not $dockerCmd) {
+        Write-Error "Docker was not found on PATH. Install Docker Desktop, or run without -Docker for the native UI."
+        exit 1
+    }
+    $repoRootD = Split-Path -Parent $PSScriptRoot
+    $uiDirD = Join-Path $repoRootD 'ui'
+    if (-not (Test-Path (Join-Path $uiDirD 'docker-compose.yml'))) {
+        Write-Error "ui/docker-compose.yml not found. Are you in the nightingale repo?"
+        exit 1
+    }
+    Write-Host ""
+    Write-Host "Starting Nightingale UI in Docker (container mode — dashboard only)..." -ForegroundColor Cyan
+    Write-Host "Agent runs / approvals / secrets edits are DISABLED in this mode (use the native UI for those)." -ForegroundColor DarkGray
+
+    $env:NIGHTINGALE_UI_PORT = $Port.ToString()
+    Push-Location $uiDirD
+    try {
+        & docker compose up -d --build
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "docker compose up failed (exit $LASTEXITCODE). See the output above."
+            exit 1
+        }
+    } finally {
+        Pop-Location
+    }
+
+    $url = "http://127.0.0.1:$Port"
+    Write-Host ""
+    Write-Host "Waiting for the container to become healthy at $url ..." -ForegroundColor Cyan
+    $healthy = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        Start-Sleep -Seconds 1
+        try {
+            $resp = Invoke-WebRequest -Uri "$url/api/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+            if ($resp.StatusCode -eq 200) { $healthy = $true; break }
+        } catch { }
+        if (($i + 1) % 5 -eq 0) { Write-Host "  still waiting... ($($i + 1)s)" -ForegroundColor DarkGray }
+    }
+    if ($healthy) {
+        Write-Host "Container healthy." -ForegroundColor Green
+        Start-Process $url
+    } else {
+        Write-Warning "Container did not become healthy within 60s. Check: docker compose logs -f"
+    }
+    Write-Host ""
+    Write-Host "Container is running detached. Manage it from ui/:" -ForegroundColor Green
+    Write-Host "  docker compose logs -f      # tail logs"
+    Write-Host "  docker compose down         # stop + remove"
+    exit 0
 }
 
 # --- Node.js version check ---------------------------------------------------

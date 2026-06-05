@@ -6,6 +6,7 @@ import { PATHS, latestFileMatching } from '../lib/paths.js';
 import { AGENT_TRIGGERS, type AgentName } from '../trigger-allowlist.js';
 import { startRun } from '../lib/runs.js';
 import { getNightingaleScheduledTasks } from '../lib/powershell.js';
+import { canSpawnHostProcess, CONTAINER_ACTION_MESSAGE } from '../lib/runtime.js';
 
 export const agentsRouter = Router();
 
@@ -149,6 +150,10 @@ agentsRouter.post('/run', (req, res) => {
   const parse = RunRequestSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: 'invalid_request', details: parse.error.flatten() });
+    return;
+  }
+  if (!canSpawnHostProcess()) {
+    res.status(503).json({ error: 'container_mode', message: CONTAINER_ACTION_MESSAGE });
     return;
   }
   const agent = parse.data.agent;

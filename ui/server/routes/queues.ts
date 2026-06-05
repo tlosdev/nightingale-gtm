@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { loadUndecidedForQueue, summarizePending, type UndecidedPendingItem } from '../lib/pending.js';
 import { QUEUES, isQueueName, type QueueConfig } from '../lib/queues.js';
 import { runClaude } from '../lib/claude.js';
+import { canSpawnHostProcess, CONTAINER_ACTION_MESSAGE } from '../lib/runtime.js';
 
 /**
  * Generic approval-queue router. Serves any queue registered in QUEUES:
@@ -84,6 +85,10 @@ queuesRouter.get('/:queue', (req, res) => {
 
 function handleAction(which: 'apply' | 'reject', timeoutMs: number) {
   return async (req: import('express').Request, res: import('express').Response) => {
+    if (!canSpawnHostProcess()) {
+      res.status(503).json({ error: 'container_mode', message: CONTAINER_ACTION_MESSAGE });
+      return;
+    }
     const queue = String(req.params.queue);
     if (!isQueueName(queue)) {
       res.status(404).json({ error: 'unknown_queue', queue });

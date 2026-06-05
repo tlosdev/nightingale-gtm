@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApprovalItem, ApprovalCategory } from '../lib/api';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
+import { useContainerMode, CONTAINER_DISABLED_HINT } from '../lib/useRunMode';
 
 // Settle delay before invalidating: the claude subprocess writes
 // approval-history.jsonl as it exits, but Windows filesystem buffering can race
@@ -50,6 +51,7 @@ export default function Dashboard() {
   const resurfacer = useQuery({ queryKey: ['resurfacer', 'latest'], queryFn: api.resurfacerLatest });
   const brief = useQuery({ queryKey: ['brief', 'today'], queryFn: api.briefToday });
 
+  const containerMode = useContainerMode();
   const [categoryFilter, setCategoryFilter] = useState<ApprovalCategory | 'all'>('all');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -125,6 +127,7 @@ export default function Dashboard() {
               key={`${item.category}:${item.pending_id}`}
               item={item}
               busy={busyId === item.pending_id || mutation.isPending}
+              disabled={containerMode}
               onApply={() => mutation.mutate({ verb: 'apply', item })}
               onReject={() => mutation.mutate({ verb: 'reject', item })}
             />
@@ -188,11 +191,13 @@ function FilterChip({ label, active, onClick, count }: { label: string; active: 
 function ApprovalRow({
   item,
   busy,
+  disabled,
   onApply,
   onReject,
 }: {
   item: ApprovalItem;
   busy: boolean;
+  disabled: boolean;
   onApply: () => void;
   onReject: () => void;
 }) {
@@ -257,7 +262,8 @@ function ApprovalRow({
         <div className="flex flex-col gap-1 shrink-0">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || disabled}
+            title={disabled ? CONTAINER_DISABLED_HINT : undefined}
             onClick={onApply}
             className="px-2 py-1 text-xs font-medium rounded bg-accent-600 hover:bg-accent-700 text-white disabled:opacity-50"
           >
@@ -265,7 +271,8 @@ function ApprovalRow({
           </button>
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || disabled}
+            title={disabled ? CONTAINER_DISABLED_HINT : undefined}
             onClick={onReject}
             className="px-2 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
           >

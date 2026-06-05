@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { loadAllUndecidedPending, summarizePending, type UndecidedPendingItem } from '../lib/pending.js';
 import { runClaude } from '../lib/claude.js';
+import { canSpawnHostProcess, CONTAINER_ACTION_MESSAGE } from '../lib/runtime.js';
 
 /**
  * Cross-check the requested numeric pending IDs against the live undecided
@@ -66,6 +67,10 @@ const APPLY_TIMEOUT_MS = 15 * 60 * 1000;
 const REJECT_TIMEOUT_MS = 60 * 1000;
 
 pendingRouter.post('/apply', async (req, res) => {
+  if (!canSpawnHostProcess()) {
+    res.status(503).json({ error: 'container_mode', message: CONTAINER_ACTION_MESSAGE });
+    return;
+  }
   const parse = ActionRequestSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: 'invalid_request', details: parse.error.flatten() });
@@ -101,6 +106,10 @@ pendingRouter.post('/apply', async (req, res) => {
 });
 
 pendingRouter.post('/reject', async (req, res) => {
+  if (!canSpawnHostProcess()) {
+    res.status(503).json({ error: 'container_mode', message: CONTAINER_ACTION_MESSAGE });
+    return;
+  }
   const parse = ActionRequestSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: 'invalid_request', details: parse.error.flatten() });

@@ -28,11 +28,26 @@ That script will:
 
 To stop: `Ctrl+C` in the terminal that runs the script.
 
+## Run in Docker (container mode) — optional
+
+For a reproducible "pull-and-run" dashboard:
+
+```powershell
+.\scripts\start-ui.ps1 -Docker     # or, from ui/:  docker compose up -d --build
+```
+
+This builds a multi-stage image (Node 20 build → slim runtime) and starts it detached, publishing **only** to the host's `127.0.0.1:8765` (never the LAN). It bind-mounts your `~/Desktop/nightingale-signals`, `~/.nightingale`, and the repo's `.claude/agents` read-only.
+
+**Honesty note — what Docker does and does NOT reproduce.** Docker reproduces the **UI + the agent definitions** (static text), not the **agent runtime**. The container is a Linux box with no Claude Code CLI, no claude.ai MCP authorization, and no PowerShell — so it runs in **container mode**: it renders the whole dashboard from the mounted output tree, but **agent runs, approval Apply/Reject, and secrets editing are disabled** (the UI shows a banner and greys out those buttons; the API returns `503 container_mode`). Use the native launcher (`start-ui.ps1`, no `-Docker`) on the host for those actions. A future phase wires a GitHub self-hosted-runner `workflow_dispatch` path so the container can trigger host runs indirectly.
+
+Stop / manage from `ui/`: `docker compose logs -f`, `docker compose down`. If your output or secrets live outside `%USERPROFILE%`, edit the `source:` paths in `ui/docker-compose.yml`.
+
 ## Configuration
 
 | Env var | Default | What it does |
 |---|---|---|
-| `NIGHTINGALE_UI_PORT` | `8765` | Port the Express server binds to. Loopback (`127.0.0.1`) only — never `0.0.0.0`. |
+| `NIGHTINGALE_UI_PORT` | `8765` | Port the Express server binds to. Loopback (`127.0.0.1`) only on the host. |
+| `NIGHTINGALE_CONTAINER` | _(unset)_ | Set to `1` (the Dockerfile/compose do this) to force container mode: bind `0.0.0.0` internally + disable host-process actions. Native runs leave it unset. |
 
 ## What you see when you open it (four tabs)
 

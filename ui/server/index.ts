@@ -24,9 +24,15 @@ import { diagnosticsRouter } from './routes/diagnostics.js';
 import { approvalsRouter } from './routes/approvals.js';
 import { settingsRouter } from './routes/settings.js';
 import { runsRouter } from './routes/runs.js';
+import { isContainer, runMode } from './lib/runtime.js';
 
 const PORT = Number(process.env.NIGHTINGALE_UI_PORT ?? 8765);
-const HOST = '127.0.0.1';  // loopback ONLY — never bind to 0.0.0.0
+// Native (host) mode binds loopback ONLY (127.0.0.1) — never exposed on the
+// LAN. In a Docker container we must bind 0.0.0.0 so the host's published port
+// mapping can reach the process; docker-compose publishes that port as
+// `127.0.0.1:8765:8765`, so the host-side exposure stays loopback-only. This
+// is the single documented exception to "never bind 0.0.0.0".
+const HOST = isContainer() ? '0.0.0.0' : '127.0.0.1';
 
 const app = express();
 
@@ -74,9 +80,13 @@ app.use((req, res, next) => {
   // response across origins.
   res.setHeader('Vary', 'Origin');
   const origin = req.headers.origin;
-  const selfOrigin = `http://${HOST}:${PORT}`;
-  if (origin && origin === selfOrigin) {
-    res.setHeader('Access-Control-Allow-Origin', selfOrigin);
+  // Allow only the two loopback origins for the configured port. This works in
+  // both modes: native (browser hits 127.0.0.1) and container (browser hits the
+  // host's loopback-published port). LAN IPs are still rejected. localhost and
+  // 127.0.0.1 are technically distinct origins, so both are listed explicitly.
+  const allowedOrigins = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   }
@@ -97,6 +107,9 @@ app.get('/api/health', (_req, res) => {
     repo_root: repoRoot(),
     host: HOST,
     port: PORT,
+    // run_mode drives the client banner + disabled actions. In 'container'
+    // mode, agent runs / approvals / secrets edits are unavailable.
+    run_mode: runMode(),
   });
 });
 

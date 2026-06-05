@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, SecretsHealth, SecretsUpdate } from '../lib/api';
+import { useContainerMode, CONTAINER_DISABLED_HINT } from '../lib/useRunMode';
 
 type FieldKey = keyof SecretsUpdate;
 
@@ -25,6 +26,7 @@ const FIELDS: FieldDef[] = [
 
 export default function Settings() {
   const qc = useQueryClient();
+  const containerMode = useContainerMode();
   const secrets = useQuery({ queryKey: ['settings', 'secrets'], queryFn: api.settingsSecrets });
   const connectors = useQuery({ queryKey: ['settings', 'connectors'], queryFn: api.settingsConnectors });
 
@@ -109,7 +111,8 @@ export default function Settings() {
                   {!f.required && f.presence(health) && (
                     <button
                       type="button"
-                      disabled={save.isPending}
+                      disabled={save.isPending || containerMode}
+                      title={containerMode ? CONTAINER_DISABLED_HINT : undefined}
                       onClick={() => clearOptional(f.key)}
                       className="px-2 py-1.5 text-xs rounded border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
                     >
@@ -123,12 +126,14 @@ export default function Settings() {
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                disabled={save.isPending}
+                disabled={save.isPending || containerMode}
+                title={containerMode ? CONTAINER_DISABLED_HINT : undefined}
                 onClick={submit}
                 className="px-4 py-1.5 text-sm font-medium rounded bg-accent-600 hover:bg-accent-700 text-white disabled:opacity-50"
               >
                 {save.isPending ? 'Saving…' : 'Save changes'}
               </button>
+              {containerMode && <span className="text-xs text-amber-700 dark:text-amber-400">Editing disabled in Docker mode — edit on the host.</span>}
               {health.updated_at && <span className="text-xs text-gray-500">Last updated {health.updated_at} · schema v{health.schema_version ?? '?'}</span>}
             </div>
 

@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { useContainerMode } from '../lib/useRunMode';
 import { useEffect, useState } from 'react';
 
 const NAV = [
@@ -15,6 +16,7 @@ export function Layout() {
   // newsletter) — the badge now reflects everything awaiting a decision.
   const approvals = useQuery({ queryKey: ['approvals'], queryFn: () => api.approvals() });
   const pendingCount = approvals.data?.counts.total ?? 0;
+  const containerMode = useContainerMode();
   return (
     <div className="flex h-full">
       <aside className="w-56 shrink-0 border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex flex-col">
@@ -48,6 +50,12 @@ export function Layout() {
         <ThemeToggle />
       </aside>
       <main className="flex-1 overflow-y-auto">
+        {containerMode && (
+          <div className="px-6 py-2 bg-amber-500/10 border-b border-amber-500/30 text-xs text-amber-800 dark:text-amber-300">
+            <strong>Docker (container) mode</strong> — dashboard is read-only. Agent runs, approvals, and secrets
+            edits are disabled here; run <code>scripts/start-ui.ps1</code> natively on the host to use them.
+          </div>
+        )}
         <Outlet />
       </main>
     </div>

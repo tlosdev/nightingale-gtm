@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { readSecretsHealth } from '../lib/secrets-health.js';
 import { writeSecrets } from '../lib/powershell.js';
 import { computeMcpStatus } from './diagnostics.js';
+import { canSpawnHostProcess, CONTAINER_ACTION_MESSAGE } from '../lib/runtime.js';
 
 /**
  * Settings tab backend.
@@ -56,6 +57,11 @@ const SecretsUpdateSchema = z
   .strict();
 
 settingsRouter.post('/secrets', async (req, res) => {
+  // write-secrets.ps1 needs PowerShell, which the Linux container doesn't have.
+  if (!canSpawnHostProcess()) {
+    res.status(503).json({ error: 'container_mode', message: CONTAINER_ACTION_MESSAGE });
+    return;
+  }
   const parse = SecretsUpdateSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: 'invalid_request', details: parse.error.flatten() });

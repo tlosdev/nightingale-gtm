@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api, AgentSummary } from '../lib/api';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
+import { useContainerMode, CONTAINER_DISABLED_HINT } from '../lib/useRunMode';
 
 export default function AgentsControlPanel() {
   const agents = useQuery({ queryKey: ['agents'], queryFn: api.agents });
@@ -31,6 +32,7 @@ export default function AgentsControlPanel() {
 
 function AgentCard({ agent }: { agent: AgentSummary }) {
   const qc = useQueryClient();
+  const containerMode = useContainerMode();
   const [started, setStarted] = useState<{ run_id: string } | null>(null);
   const [showOutput, setShowOutput] = useState(false);
 
@@ -81,7 +83,8 @@ function AgentCard({ agent }: { agent: AgentSummary }) {
         <div className="flex flex-col gap-1 shrink-0">
           <button
             type="button"
-            disabled={runMutation.isPending}
+            disabled={runMutation.isPending || containerMode}
+            title={containerMode ? CONTAINER_DISABLED_HINT : undefined}
             onClick={() => runMutation.mutate()}
             className="px-3 py-1.5 text-sm font-medium rounded bg-accent-600 hover:bg-accent-700 text-white disabled:opacity-50"
           >

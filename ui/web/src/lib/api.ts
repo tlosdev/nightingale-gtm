@@ -24,6 +24,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 // === Schemas (kept loose; server is the type authority) ===
+export type RunMode = 'host' | 'container';
+
 export interface HealthResp {
   ok: boolean;
   version: string;
@@ -32,6 +34,9 @@ export interface HealthResp {
   repo_root: string;
   host: string;
   port: number;
+  // 'container' = Docker (dashboard-only): agent runs / approvals / secrets
+  // edits are disabled. Absent on older servers → treat as 'host'.
+  run_mode?: RunMode;
 }
 
 export interface AgentSummary {

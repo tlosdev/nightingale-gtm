@@ -20,6 +20,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { isPhraseAllowed } from '../trigger-allowlist.js';
 import { repoRoot, SIGNALS_ROOT } from './paths.js';
+import { canSpawnHostProcess, CONTAINER_ACTION_MESSAGE } from './runtime.js';
 import type { ClaudeRunResult } from './claude.js';
 
 export type RunStatus = 'running' | 'ok' | 'error' | 'timeout';
@@ -176,6 +177,12 @@ function treeKill(pid: number | undefined): void {
 
 export function startRun(opts: StartRunOptions): StartRunHandle {
   const { phrase } = opts;
+  // Fail-closed backstop: never spawn the host CLI from a container. Routes
+  // check this first and return a clean 503, but this guarantees the single
+  // spawn chokepoint can't be bypassed.
+  if (!canSpawnHostProcess()) {
+    throw new Error(`container_mode: ${CONTAINER_ACTION_MESSAGE}`);
+  }
   // Defense-in-depth: re-validate the phrase against the allowlist at the spawn
   // boundary. Throws synchronously so the HTTP layer can return 400.
   if (!isPhraseAllowed(phrase)) {
