@@ -2,6 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useContainerMode } from '../lib/useRunMode';
+import { useLiveRefresh } from '../lib/useLiveRefresh';
 import { useEffect, useState } from 'react';
 
 const NAV = [
@@ -12,6 +13,9 @@ const NAV = [
 ] as const;
 
 export function Layout() {
+  // Event-driven refresh: invalidate queries when the agent output tree changes
+  // (scheduled / terminal / UI runs all land here), instead of polling on a clock.
+  useLiveRefresh();
   // Aggregate approvals count across all queues (hubspot + pitch-deck +
   // newsletter) — the badge now reflects everything awaiting a decision.
   const approvals = useQuery({ queryKey: ['approvals'], queryFn: () => api.approvals() });

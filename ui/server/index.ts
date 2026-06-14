@@ -24,6 +24,7 @@ import { diagnosticsRouter } from './routes/diagnostics.js';
 import { approvalsRouter } from './routes/approvals.js';
 import { settingsRouter } from './routes/settings.js';
 import { runsRouter } from './routes/runs.js';
+import { eventsRouter } from './routes/events.js';
 import { isContainer, runMode } from './lib/runtime.js';
 
 const PORT = Number(process.env.NIGHTINGALE_UI_PORT ?? 8765);
@@ -127,6 +128,7 @@ app.use('/api/diagnostics', diagnosticsRouter);
 app.use('/api/approvals', approvalsRouter); // unified, category-tagged approvals (Dashboard)
 app.use('/api/settings', settingsRouter);   // editable secrets + connector status
 app.use('/api/runs', runsRouter);           // background-run history + live status (Logs)
+app.use('/api/events', eventsRouter);       // SSE stream: pushes signals-tree changes to the browser
 
 // Static frontend served from web/dist. fileURLToPath handles Windows paths
 // + percent-encoding correctly (paths with spaces work).

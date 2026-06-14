@@ -1,9 +1,10 @@
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, AgentSummary, AgentRunResp } from '../lib/api';
 import { MarkdownRenderer } from '../components/MarkdownRenderer';
 import { useContainerMode } from '../lib/useRunMode';
+import { DATA_KEYS } from '../lib/useLiveRefresh';
 
 export default function AgentsControlPanel() {
   const agents = useQuery({ queryKey: ['agents'], queryFn: api.agents });
@@ -50,6 +51,25 @@ function AgentCard({ agent }: { agent: AgentSummary }) {
     queryFn: () => api.agentOutput(agent.name),
     enabled: showOutput,
   });
+
+  // Belt-and-suspenders for host-mode UI runs: poll just THIS in-flight run
+  // until it settles, then refresh dashboard data. The SSE file-watch normally
+  // catches the output write, but a recursive fs.watch can occasionally drop an
+  // event on Windows — this guarantees the manual-run case always refreshes.
+  // Scoped to an active run only; it stops polling the moment the run finishes.
+  const runId = started && !started.dispatched ? started.run_id : undefined;
+  const runStatus = useQuery({
+    queryKey: ['run', runId],
+    queryFn: () => api.runDetail(runId!),
+    enabled: !!runId,
+    refetchInterval: (q) => (q.state.data?.run.status === 'running' ? 2000 : false),
+  });
+  useEffect(() => {
+    const status = runStatus.data?.run.status;
+    if (status && status !== 'running') {
+      for (const key of DATA_KEYS) qc.invalidateQueries({ queryKey: key });
+    }
+  }, [runStatus.data?.run.status, qc]);
 
   return (
     <article className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
