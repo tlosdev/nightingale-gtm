@@ -259,7 +259,7 @@ Chat summary: delta window, per-track beat counts, count of advancing storylines
 6. **Advance the cursor:** write `state/cursor.json` = `{ schema_version: 1, last_newsletter_at: "<now ISO>" }`.
 6b. **Advance the campaign (if this was a campaign edition).** If the approved item's `campaign_edition` is a positive integer, re-read `state/campaign.json` fresh, set `editions_sent = max(editions_sent, campaign_edition)`, and if `editions_sent >= total_editions` set `status = "completed"`. Atomic write (`.tmp` + `Move-Item -Force`). This is the ONLY place the campaign advances (same discipline as the cursor) — a reject or an un-approved edition never advances it, and idempotent re-approval (step 1) never double-advances.
 7. Move `pending/{date}.json` → `pending/archive/{date}.json`.
-8. Chat summary: "Created an unsent Gmail draft with {N} recipients in BCC (To: you). Review it in Gmail Drafts and send when ready. {M} beats stamped as reported; cursor advanced to {now}."
+8. Chat summary: "Created an unsent Gmail draft with {N} recipients in BCC (To: you). Review it in Gmail Drafts and **send it as-is** — editing the body in Gmail's compose can strip the HTML formatting. {M} beats stamped as reported; cursor advanced to {now}."
 
 ### `reject stakeholder-newsletter from {date}`
 Append `"decision":"rejected"` to `approval-history.jsonl`, archive the pending file. Do **not** create a draft, do **not** advance the cursor, do **not** stamp any `included_in` (so the window and the unreported beats survive to the next run). Chat summary: "Rejected — no draft created, delta window and unreported beats preserved for the next run."
@@ -270,38 +270,41 @@ A dress rehearsal of the real send to operator-supplied addresses, so the operat
 2. Apply the em-dash strip (decision step **2b**) to `subject`, `body_html`, and `body_markdown`.
 3. **Create ONE Gmail draft** via `mcp__claude_ai_Gmail__create_draft`: **to:** the operator's own address; **bcc:** every `{emails}` address (verbatim); **cc:** none; **subject:** `[TEST] ` + the payload subject; **htmlBody:** `body_html`; **body:** the plain-text `body_markdown`. **All test recipients go in BCC — never To/Cc — exactly like the real send.** If BCC cannot be guaranteed, do NOT create the draft.
 4. **Do nothing else — this is non-mutating.** Do NOT append to `approval-history.jsonl`, do NOT stamp `included_in`, do NOT advance the cursor or campaign, do NOT archive. The edition stays pending/undecided so the real approval still happens normally afterward.
-5. Chat summary: "Created a TEST draft ([TEST] subject) with {N} recipients in BCC (To: you). Open Gmail Drafts and send it to see how it lands. The edition is still pending — nothing was approved or advanced."
+5. Chat summary: "Created a TEST draft ([TEST] subject) with {N} recipients in BCC (To: you). Open Gmail Drafts and **send it as-is** (don't edit the body in compose — that can strip the HTML) to see how it lands. The edition is still pending — nothing was approved or advanced."
 
 ---
 
 ## Branded HTML template (inline, email-safe)
 
-Palette from the live Nightingale logo (`nightingalesolution.com`): deep purple `#2b244b` (headings/rules), lavender `#edebef` (panel backgrounds), mauve-grays `#5c546c`/`#757285` (muted text), body `#1a2230` on white. Font stack `"Segoe UI", "Helvetica Neue", Arial, sans-serif`. All CSS **inlined on elements** (no `<style>`, no external assets). Use a table-based shell for Outlook. Skeleton the agent fills in:
+Palette from the live Nightingale logo (`nightingalesolution.com`): deep purple `#2b244b` (headings/rules), lavender `#edebef` (panel backgrounds), mauve-grays `#5c546c`/`#757285` (muted text), body `#1a2230` on white. Font stack `"Segoe UI", "Helvetica Neue", Arial, sans-serif`. All CSS **inlined on elements** (no `<style>`, no external assets). Use a table-based shell for Outlook.
+
+**Backgrounds MUST survive Gmail — the #1 rendering bug.** Every element with a colored background (the header bar, the TL;DR panel, any highlight/metrics panel, the footer) MUST carry **BOTH** a `bgcolor="#hex"` **attribute** AND a `background-color:#hex` inline style on the **same** `<td>`/`<table>`. **Never use the `background:` shorthand** and never rely on CSS background alone: Gmail (both its compose editor and its renderer) and Outlook drop CSS backgrounds but honor the `bgcolor` attribute — without it the purple header and the lavender highlight panels arrive as plain white. Put any text "highlight" in its own `<td bgcolor="#hex">` cell, **not** a `<span>` with a background (span backgrounds are stripped). Keep colored text as `color:` inline styles (those survive). Skeleton the agent fills in — note the paired `bgcolor` + `background-color` on every shaded cell:
 
 ```html
-<div style="margin:0;padding:0;background:#edebef;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#edebef;">
+<div style="margin:0;padding:0;background-color:#edebef;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#edebef" style="background-color:#edebef;">
     <tr><td align="center" style="padding:24px 12px;">
-      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background:#ffffff;border:1px solid #dbe4ee;border-radius:8px;overflow:hidden;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;">
-        <tr><td style="background:#2b244b;padding:20px 28px;">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" bgcolor="#ffffff" style="width:600px;max-width:100%;background-color:#ffffff;border:1px solid #dbe4ee;border-radius:8px;overflow:hidden;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;">
+        <tr><td bgcolor="#2b244b" style="background-color:#2b244b;padding:20px 28px;">
           <span style="color:#ffffff;font-size:18px;font-weight:600;letter-spacing:.2px;">Nightingale</span>
           <span style="color:#948c9e;font-size:13px;"> &nbsp;investor update</span>
         </td></tr>
         <tr><td style="padding:28px;color:#1a2230;font-size:15px;line-height:1.55;">
-          <!-- TL;DR (EVERY edition, first in the body): lavender panel
-               <table width="100%" style="background:#edebef;border-radius:6px;"><tr><td style="padding:14px 18px;">
+          <!-- TL;DR (EVERY edition, first in the body): lavender panel — bgcolor attr AND background-color style
+               <table width="100%" cellpadding="0" cellspacing="0" bgcolor="#edebef" style="background-color:#edebef;border-radius:6px;"><tr><td bgcolor="#edebef" style="background-color:#edebef;padding:14px 18px;">
                <div style="font-size:12px;font-weight:700;letter-spacing:.4px;color:#2b244b;text-transform:uppercase;">TL;DR</div>
                <ul style="margin:6px 0 0;padding-left:18px;color:#1a2230;">…3–5 one-line bullets, ALWAYS incl. one raise-status bullet…</ul></td></tr></table> -->
-          <!-- Core business metrics (REQUIRED in campaign editions): compact rows —
-               Pipeline · Leads · Customers · Revenue — e.g. a 2-column table with
-               labels in #757285 and values in #2b244b. (Raise status is a TL;DR bullet, not here.) -->
+          <!-- Core business metrics (REQUIRED in campaign editions): a 2-column <table> —
+               Pipeline · Leads · Customers · Revenue — labels in #757285, values in #2b244b;
+               any highlighted value goes in its own <td bgcolor="#edebef" style="background-color:#edebef;"> cell.
+               (Raise status is a TL;DR bullet, not here.) -->
           <!-- Momentum since last week: per-track arcs. Section headers in #2b244b, hairline <hr style="border:none;border-top:1px solid #dbe4ee;">. -->
           <!-- Investors / Pipeline / Active clients roll-call — OMIT any track with no active storylines -->
           <!-- What's next / the ask (no raise section — raise is the TL;DR bullet) -->
           <!-- Every section above is omitted entirely when it has no content this edition -->
           <!-- Sign-off -->
         </td></tr>
-        <tr><td style="background:#f6f9fc;padding:16px 28px;color:#757285;font-size:12px;border-top:1px solid #dbe4ee;">
+        <tr><td bgcolor="#f6f9fc" style="background-color:#f6f9fc;padding:16px 28px;color:#757285;font-size:12px;border-top:1px solid #dbe4ee;">
           Nightingale P2E&#8482; &middot; Patient to EDC
         </td></tr>
       </table>
